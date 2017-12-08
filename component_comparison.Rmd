@@ -1,0 +1,421 @@
+---
+title: "ICA / Varimax Evolutionary Features"
+author: "J.P. Meagher"
+date: "29 November 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, message = F)
+```
+
+Having performed an ancestral reconstruction of echolocation spectrograms using evolutionary features derived from a PCA, I will now consider features derived using both ICA and Varimax transformations of the Principal Components.
+
+```{r packages}
+library(signal) # Produce Spectrogram
+library(tidyverse) # see http://r4ds.had.co.nz/
+library(magrittr) # pipe operator and alaises
+library(batwork) # my own package, long form call data
+library(sdsBAT) # my own package, tree data and functions for ancestral reconstruction
+library(ape) # Analyses of Phylogenetics and Evolution
+library(RColorBrewer) # for pretty pictures
+library(ggridges) # Joy plots
+library(ggtree) ## ggplot for phylogenetic trees
+```
+
+```{r data}
+sp <- sdsBAT::phylogeny$tip.label
+
+df <- readRDS('preprocessed_calls.RDS') %>% 
+  select(bat, species, family, full) %>% 
+  mutate(species = factor(species, levels = sp))
+
+t <- seq(from = 0, to = 1, length.out = 100) %>% 
+  extract(c(F, T))
+
+f <- seq(from = 0, to = 250, length.out = 257)
+restricted_f <- f %>% 
+  extract(f > 9 & f < 212) %>% 
+  extract(c(F, T))
+
+remove(sp, f)
+```
+
+```{r mean spectrograms}
+temp <- df %>% 
+  group_by(bat, family) %>% 
+  summarise(species = unique(species))
+
+bat <- temp %>% use_series(bat)
+species <- temp %>% use_series(species)
+family <- temp %>% use_series(family)
+
+by_bat <- df %>% 
+  use_series(full) %>% 
+  unlist %>% 
+  array(dim = c(104*50, df %>% nrow)) %>%
+  apply(1, function(x) tapply(x, df %>% use_series(bat), mean)) %>% 
+  as_tibble() %>% 
+  mutate(bat = bat, species = species, family = family) %>% 
+  select(bat, species, family, starts_with('V')) %>% 
+  group_by(bat, family, species) %>% 
+  nest %>% 
+  mutate(full = map(data, function(x) x %>% unlist %>% array(dim = c(104,50)))) %>% 
+  select(-data) %>% 
+  ungroup
+
+temp <- by_bat %>% 
+  group_by(species) %>% 
+  summarise(family = unique(family))
+
+species <- temp %>% use_series(species)
+family <- temp %>% use_series(family)
+
+
+by_species <- by_bat %>% 
+  use_series(full) %>% 
+  unlist %>% 
+  array(dim = c(104*50, by_bat %>% nrow)) %>%
+  apply(1, function(x) tapply(x, by_bat %>% use_series(species), mean)) %>% 
+  as_tibble() %>% 
+  mutate(species = species, family = family) %>% 
+  select(species, family, starts_with('V')) %>% 
+  group_by(family, species) %>% 
+  nest %>% 
+  mutate(full = map(data, function(x) x %>% unlist %>% array(dim = c(104,50)))) %>% 
+  select(-data) %>% 
+  ungroup
+
+family <- by_species %>% use_series(family) %>% unique
+
+by_family <- by_species %>% 
+  use_series(full) %>% 
+  unlist %>% 
+  array(dim = c(104*50, by_species %>% nrow)) %>%
+  apply(1, function(x) tapply(x, by_species %>% use_series(family), mean)) %>% 
+  as_tibble() %>% 
+  mutate(family = family) %>% 
+  select(family, starts_with('V')) %>% 
+  group_by(family) %>% 
+  nest %>% 
+  mutate(full = map(data, function(x) x %>% unlist %>% array(dim = c(104,50)))) %>% 
+  select(-data) %>% 
+  ungroup
+
+rm(bat, family, species, temp)
+```
+
+```{r bootstrapped sample}
+temp <- df %>% 
+  group_by(bat) %>% 
+  sample_n(1) %>% 
+  ungroup %>% 
+  group_by(species) %>% 
+  sample_n(4) %>% 
+  ungroup
+
+boot_mean <- df %>% 
+  group_by(species) %>% 
+  summarise(family = unique(family)) %>% 
+  ungroup %>% 
+  cbind(
+    check <- temp %>%
+      use_series(full) %>% 
+      unlist %>% 
+      array(dim = c(104*50, temp %>% nrow)) %>% 
+      apply(1, function(x) tapply(x, temp %>% use_series(species), mean))
+  ) %>% 
+  group_by(species, family) %>% 
+  nest %>%
+  mutate(full = map(data, function(x) x %>% unlist %>% array(dim = c(104,50)))) %>% 
+  select(-data) %>% 
+  ungroup
+
+for(i in 1:24){
+  temp <- df %>% 
+    group_by(bat) %>% 
+    sample_n(1) %>% 
+    ungroup %>% 
+    group_by(species) %>% 
+    sample_n(4) %>% 
+    ungroup
+  
+  temp_mean <- df %>% 
+  group_by(species) %>% 
+  summarise(family = unique(family)) %>% 
+  ungroup %>% 
+  cbind(
+    check <- temp %>%
+      use_series(full) %>% 
+      unlist %>% 
+      array(dim = c(104*50, temp %>% nrow)) %>% 
+      apply(1, function(x) tapply(x, temp %>% use_series(species), mean))
+  ) %>% 
+  group_by(species, family) %>% 
+  nest %>%
+  mutate(full = map(data, function(x) x %>% unlist %>% array(dim = c(104,50)))) %>% 
+  select(-data) %>% 
+  ungroup
+  
+  boot_mean <- rbind(boot_mean, temp_mean)
+  remove(temp, temp_mean)
+}
+
+boot_mean <- boot_mean %>% 
+  arrange(species)
+```
+
+```{r bootstrapped sample tree}
+n_samples <- 25
+boot_tree <- phylogeny
+
+for(i in phylogeny %>% use_series(tip.label)){
+  individuals <- stree(n_samples)
+  individuals$edge.length <- rep(0, n_samples)
+  individuals$tip.label <- rep(i, n_samples)
+  
+  boot_tree <- bind.tree(boot_tree, individuals, which(boot_tree$tip.label == i))
+}
+
+rm(individuals, n_samples)
+```
+
+# Principal Components as Evolutionary Features
+
+A Principal Components Analysis is performed on the data, yielding a dimension reduction along modes of variation. Each principal component can be considered to be a suite of evolutionary features, with each suite being orthogonal to every other suite.
+
+```{r pca}
+pca <- boot_mean %>% 
+  use_series(full) %>%
+  unlist %>% 
+  array(dim = c(50*104, df %>% nrow)) %>% 
+  extract(, sample.int(df %>% nrow)) %>% 
+  t %>% 
+  prcomp
+```
+
+```{r centre spectrograms}
+boot_mean <- boot_mean %>% 
+  mutate(centred = map(full, function(x) x %>% subtract(pca %>% use_series(center))))
+```
+
+```{r scores, fig.cap = "The scores associated with each component provide insight into the proportion of the sample variance captured by the corresponding principal component. This PCA was performed on a sample of bootstrapped mean estimates, so some of the bat level variation should have been stripped from the data. The bootstrapped sample was also weighted with the same number of samples from each species, an attempt at ensuring no one species dominated modes of variation identified. The scores above suggest that the dataset of echolocation call spectrograms is very high dimensional, requiring 13 components to explain 75% of the variance, while 16 are required to explain 90%. It can be shown that 9 components capture more than 2.5% of the variation, and 14 capture more than 1% of the variation."}
+s_var <- pca %>% use_series(sdev) %>% raise_to_power(2) %>% sum
+
+#pca %>% use_series(sdev) %>% raise_to_power(2) %>% divide_by(s_var) %>% cumsum %>% is_less_than(0.9) %>% sum
+#pca %>% use_series(sdev) %>% raise_to_power(2) %>% divide_by(s_var) %>% is_greater_than(0.01) %>% sum
+
+n <- 20
+
+pca %>% use_series(sdev) %>% raise_to_power(2) %>% 
+  extract(1:n) %>% divide_by(s_var) %>% cumsum %>% 
+  plot(xlab = 'Component', ylab = 'Proportion', main = 'Variance Explained',
+    pch = 19, col = 2, ylim = c(0, 1))
+pca %>% use_series(sdev) %>% raise_to_power(2) %>% 
+  extract(1:n) %>% divide_by(s_var) %>% cumsum %>% 
+  lines(col = 2)
+pca %>% use_series(sdev) %>% raise_to_power(2) %>% 
+  extract(1:n) %>% divide_by(s_var) %>% 
+  points(col = 3, pch = 19)
+pca %>% use_series(sdev) %>% raise_to_power(2) %>% 
+  extract(1:n) %>% divide_by(s_var) %>% 
+  lines(col = 3)
+
+legend('topleft', legend = c('Cumulative Sum', 'Per Component'), pch = 19, col = c(2,3))
+rm(s_var, n)
+```
+
+```{r pc scores}
+n <- 15
+
+pc_scores <- boot_mean %>% 
+  select(species, family) %>% 
+  cbind(pca %>% 
+    use_series(rotation) %>% 
+    extract(, 1:n) %>% 
+    t %>% 
+    multiply_by_matrix( boot_mean %>%
+        select(centred) %>%
+        unlist %>% 
+        array(dim = c(104*50, boot_mean %>% nrow))
+    ) %>% 
+    apply(2, divide_by, pca %>% use_series(sdev) %>% extract(1:n)) %>% 
+    t %>% 
+    as_tibble
+  )
+```
+
+```{r pc hyperparameters}
+pc_mle <- pc_scores %>% 
+  select(starts_with('PC')) %>%
+  apply(2, sdsBAT:::pou_type2mle, boot_tree, logl_function = pou_logl_fast,
+  optim_function = "optim", optim_method = "Nelder-Mead",
+  lower_initialisation = c(0, 0, 0), upper_initialisation = c(1, 100, 1),
+  n_restarts = 5)
+
+rownames(pc_mle) <- c('s_p', 'l', 's_n', 'logl')
+
+print('BOOTSTRAPPED PC MLE HYP')
+pc_mle %>% round(2)
+```
+
+# Independent Components as Evolutionary Features
+
+In order to investigate the appropriateness of Independent Components as Evolutionary Features I will investigate whether $n$ components produce components with a stong phylogenetic signal for $n = 2, \dots, 15$.
+
+```{r}
+s_var <- pca %>% use_series(sdev) %>% raise_to_power(2) %>% sum
+
+ic_var <- list()
+ic_hyper <- list()
+
+for(i in 2:15){
+  ic <- pca %>% use_series(rotation) %>% extract(, 1:i) %>% t %>% cubica34()
+  
+  ic_scores <- boot_mean %>% 
+    select(species, family) %>% 
+    cbind(ic %>% 
+      use_series(y) %>% 
+      divide_by(sqrt(104*50)) %>% 
+      multiply_by_matrix( boot_mean %>%
+          select(centred) %>%
+          unlist %>% 
+          array(dim = c(104*50, boot_mean %>% nrow))
+      ) %>% 
+      t %>% 
+      as_tibble
+    )
+  
+  ic_var[[i-1]] <- ic_scores %>% 
+    select(starts_with('V')) %>% 
+    summarise_all(var) %>% 
+    divide_by(s_var)
+  
+  ic_scores <- ic_scores %>% 
+    mutate_if(is.numeric, function(x) scale(x, center = F) %>% as.vector)
+  
+  ic_hyper[[i-1]] <- ic_scores %>% 
+    select(starts_with('V')) %>%
+    apply(2, sdsBAT:::pou_type2mle, boot_tree, logl_function = pou_logl_fast,
+    optim_function = "optim", optim_method = "Nelder-Mead",
+    lower_initialisation = c(0, 0, 0), upper_initialisation = c(1, 100, 1),
+    n_restarts = 5)
+  
+  rownames(ic_hyper[[i-1]]) <- c('s_p', 'l', 's_n', 'logl')
+}
+```
+
+```{r}
+n <- 14
+ic_hyper[[n]]
+ic_var[[n]] %>% sum
+```
+
+Interestingly, even though the ICA components do not explain as much of the variance as the PCA components, they do seem to produce better phylogenetic signal. Perhaps there is some way of combining phylogenetic length scale, phylogenetic noise, and proportion of variance explained in some way to identify a phylogenetically optimal set of components?
+
+# Varimax Components as Evolutionary Features
+
+I will investigate whether VARIMAX components offer a good set of components.
+
+```{r}
+s_var <- pca %>% use_series(sdev) %>% raise_to_power(2) %>% sum
+
+varimax_var <- list()
+varimax_hyper <- list()
+
+for(i in 2:15){
+  vari <- pca %>% use_series(rotation) %>% extract(, 1:i) %>% varimax
+  
+  var_scores <- boot_mean %>% 
+    select(species, family) %>% 
+    cbind(vari %>% 
+      use_series(loadings) %>% 
+      t %>% 
+      multiply_by_matrix( boot_mean %>%
+          select(centred) %>%
+          unlist %>% 
+          array(dim = c(104*50, boot_mean %>% nrow))
+      ) %>% 
+      t %>% 
+      as_tibble
+    )
+  
+  varimax_var[[i-1]] <- var_scores %>% 
+    select(starts_with('PC')) %>% 
+    summarise_all(var) %>% 
+    divide_by(s_var)
+  
+  var_scores <- var_scores %>% 
+    mutate_if(is.numeric, function(x) scale(x, center = F) %>% as.vector)
+  
+  varimax_hyper[[i-1]] <- var_scores %>% 
+    select(starts_with('PC')) %>%
+    apply(2, sdsBAT:::pou_type2mle, boot_tree, logl_function = pou_logl_fast,
+    optim_function = "optim", optim_method = "Nelder-Mead",
+    lower_initialisation = c(0, 0, 0), upper_initialisation = c(1, 100, 1),
+    n_restarts = 5)
+  
+  rownames(varimax_hyper[[i-1]]) <- c('s_p', 'l', 's_n', 'logl')
+}
+
+pca %>% use_series(sdev) %>% raise_to_power(2) %>% divide_by(s_var) %>% extract(1:i)
+```
+
+```{r}
+n <- 11
+varimax_hyper[[n]]
+varimax_var[[n]]
+```
+
+# Phylogenetic 'Best Set' of Components
+
+I am going to atempt to construct a metric which helps identify the best set of components. It will look something like
+
+$$
+f(\ell) \times SNR \times \text{Proportion of Variance Explained}
+$$
+
+```{r}
+pc_phylo_cap <- pc_mle %>% extract(2,) %>% 
+  multiply_by(
+    pc_mle %>% extract(1,) %>% raise_to_power(2) %>%  divide_by(
+      pc_mle %>% extract(1,) %>% raise_to_power(2) %>% add(pc_mle %>% extract(3,) %>% raise_to_power(2))
+    )
+  ) %>%
+  multiply_by(pca %>% use_series(sdev) %>% raise_to_power(2) %>% extract(1:15) %>% divide_by(s_var)) %>% 
+  cumsum
+
+ic_phylo_cap <- c()
+
+for(i in 1:14){
+  ic_phylo_cap[i] <- ic_hyper %>% extract2(i) %>% extract(2,) %>% 
+    multiply_by(ic_hyper %>% extract2(i) %>% extract(1,) %>% raise_to_power(2) %>% divide_by(
+      ic_hyper %>% extract2(i) %>% extract(1,) %>% raise_to_power(2) %>% add(ic_hyper %>% extract2(i) %>% extract(3,) %>% raise_to_power(2))
+      )
+    ) %>% 
+    multiply_by(ic_var %>% extract2(i)) %>% 
+    sum
+}
+
+
+varimax_phylo_cap <- c()
+
+for(i in 1:14){
+  varimax_phylo_cap[i] <- varimax_hyper %>% extract2(i) %>% extract(2,) %>% 
+    multiply_by(varimax_hyper %>% extract2(i) %>% extract(1,) %>% raise_to_power(2) %>% divide_by(
+      varimax_hyper %>% extract2(i) %>% extract(1,) %>% raise_to_power(2) %>% add(varimax_hyper %>% extract2(i) %>% extract(3,) %>% raise_to_power(2))
+      )
+    ) %>% 
+    multiply_by(varimax_var %>% extract2(i)) %>% 
+    sum
+}
+
+plot(1:15, pc_phylo_cap, col = 'green', pch = 19, ylim = c(0, 30), 
+  main = 'Weighted length-scale',
+  xlab = 'Number of components', ylab = 'Length-Scale')
+points(2:15, ic_phylo_cap, col = 'red', pch = 19)
+points(2:15, varimax_phylo_cap, col = 'blue', pch = 19)
+legend('topright', c('PCA', 'ICA', 'VARIMAX'), col = c('green', 'red', 'blue'), pch = 19)
+```
+
+It seems that 9 Varimax or ICA components offers the most phylogenetic signal. This may be interesting to explore within the LOSO-CV procedure.

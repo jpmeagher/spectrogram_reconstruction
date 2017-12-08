@@ -1,0 +1,63 @@
+---
+title: "Testing Separability over Time and Frequency"
+author: "J.P. Meagher"
+date: "30 October 2017"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+As a brief aside I am going to consider the separability of the spectrogram covariance over time and frequency. I will do this using the `covsep` package.
+
+```{r}
+library(batwork)
+library(tidyverse)
+library(magrittr)
+library(covsep)
+```
+
+Take the data from the dataframe of call spectrograms and place in an array
+
+```{r}
+df <- readRDS('preprocessed_calls.RDS')
+
+ar <- df %>% use_series(full) %>% unlist %>%  array(dim = c(104, 50, 1816))
+
+check <- empirical_bootstrap_test(ar, 1:10, 1:10, studentize = 'full')
+
+check
+```
+
+The above code tests the null Hypothesis that the data is separable. As can be seen above in all cases we reject the null hypothesis and so conclude that the data is not separable over time and space.
+
+It would be interesting to check haow many degrees of freedom there are in the data in order to understand how much error we can expect to be associated with our estimates of the covariance operator on the spectrograms. In order to check this I will consider how many points on the spectrograms represent signal for different signal to noise ratios.
+
+```{r}
+# -100 dB Threshold
+th <- -100
+ar %>% is_greater_than(th) %>% apply(c(1,2), sum) %>% t %>%  image(main = '-100dB Threshold')
+ar %>% is_greater_than(th) %>% apply(c(1,2), sum) %>% t %>%  min
+ar %>% is_greater_than(th) %>% apply(c(1,2), sum) %>% t %>%  max
+```
+
+```{r}
+# -80 dB Threshold
+th <- -80
+ar %>% is_greater_than(th) %>% apply(c(1,2), sum) %>% t %>%  image(main = '-80dB Threshold')
+ar %>% is_greater_than(th) %>% apply(c(1,2), sum) %>% t %>%  min
+ar %>% is_greater_than(th) %>% apply(c(1,2), sum) %>% t %>%  max
+ar %>% is_greater_than(th) %>% apply(c(1,2), sum) %>% is_greater_than(0) %>% sum
+```
+
+```{r}
+# -60 dB Threshold
+th <- -60
+ar %>% is_greater_than(th) %>% apply(c(1,2), sum) %>% t %>%  image(main = '-60dB Threshold')
+ar %>% is_greater_than(th) %>% apply(c(1,2), sum) %>% t %>%  min
+ar %>% is_greater_than(th) %>% apply(c(1,2), sum) %>% t %>%  max
+ar %>% is_greater_than(th) %>% apply(c(1,2), sum) %>% is_greater_than(0) %>% sum
+```
+
+These tests indicate that while setting a threshold below which spectrogram pixels are considered to be noise does remove many pixels from each image from consideration this does not really allow sparsity to be introduced over all the spectrograms and for any given pixel, it is most likely that it will contain some signal for some call. Maybe this provides some insight into why PCA on the thresholded specrograms fail to explain much of the variation in the sample.

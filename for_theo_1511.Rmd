@@ -1,0 +1,741 @@
+---
+title: "Supervision Meeting Demo"
+author: "J.P. Meagher"
+date: "14 November 2017"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, message = F)
+```
+
+Here I will develop more fully the pipeline for ancestral reconstruction of Bat Echolocation call spectrograms. This will go through creating a bootstrapped sample for analysis, identification of components and component weights, hyperparameter estimation, Leave-Species-Out validation of reconstructions, to finally producing reconstructions of Bat Echolocation Call Spectrograms.
+
+# Packages
+
+Packages used in this analysis are as follows:
+
+```{r packages, echo = T}
+library(signal) # Produce Spectrogram
+library(tidyverse) # see http://r4ds.had.co.nz/
+library(magrittr) # pipe operator and alaises
+library(batwork) # my own package, long form call data
+library(sdsBAT) # my own package, tree data and functions for ancestral reconstruction
+library(ape) # Analyses of Phylogenetics and Evolution
+library(RColorBrewer) # for pretty pictures
+library(ggridges) # Joy plots
+library(ggtree) ## ggplot for phylogenetic trees
+```
+
+# Data
+
+Preprocessing of echolocation call spectrograms was performed in Matlab. 
+
+```{r data}
+sp <- sdsBAT::phylogeny$tip.label
+
+df <- readRDS('preprocessed_calls.RDS') %>% 
+  select(bat, species, family, full) %>% 
+  mutate(species = factor(species, levels = sp))
+
+t <- seq(from = 0, to = 1, length.out = 100) %>% 
+  extract(c(F, T))
+
+f <- seq(from = 0, to = 250, length.out = 257)
+restricted_f <- f %>% 
+  extract(f > 9 & f < 212) %>% 
+  extract(c(F, T))
+
+remove(sp, f)
+```
+
+# Mean Spectrograms
+
+Mean spectrograms for the sample to the bat, species, and family levels may all be of interest in this analysis.
+
+```{r mean spectrograms}
+temp <- df %>% 
+  group_by(bat, family) %>% 
+  summarise(species = unique(species))
+
+bat <- temp %>% use_series(bat)
+species <- temp %>% use_series(species)
+family <- temp %>% use_series(family)
+
+by_bat <- df %>% 
+  use_series(full) %>% 
+  unlist %>% 
+  array(dim = c(104*50, df %>% nrow)) %>%
+  apply(1, function(x) tapply(x, df %>% use_series(bat), mean)) %>% 
+  as_tibble() %>% 
+  mutate(bat = bat, species = species, family = family) %>% 
+  select(bat, species, family, starts_with('V')) %>% 
+  group_by(bat, family, species) %>% 
+  nest %>% 
+  mutate(full = map(data, function(x) x %>% unlist %>% array(dim = c(104,50)))) %>% 
+  select(-data) %>% 
+  ungroup
+
+temp <- by_bat %>% 
+  group_by(species) %>% 
+  summarise(family = unique(family))
+
+species <- temp %>% use_series(species)
+family <- temp %>% use_series(family)
+
+
+by_species <- by_bat %>% 
+  use_series(full) %>% 
+  unlist %>% 
+  array(dim = c(104*50, by_bat %>% nrow)) %>%
+  apply(1, function(x) tapply(x, by_bat %>% use_series(species), mean)) %>% 
+  as_tibble() %>% 
+  mutate(species = species, family = family) %>% 
+  select(species, family, starts_with('V')) %>% 
+  group_by(family, species) %>% 
+  nest %>% 
+  mutate(full = map(data, function(x) x %>% unlist %>% array(dim = c(104,50)))) %>% 
+  select(-data) %>% 
+  ungroup
+
+family <- by_species %>% use_series(family) %>% unique
+
+by_family <- by_species %>% 
+  use_series(full) %>% 
+  unlist %>% 
+  array(dim = c(104*50, by_species %>% nrow)) %>%
+  apply(1, function(x) tapply(x, by_species %>% use_series(family), mean)) %>% 
+  as_tibble() %>% 
+  mutate(family = family) %>% 
+  select(family, starts_with('V')) %>% 
+  group_by(family) %>% 
+  nest %>% 
+  mutate(full = map(data, function(x) x %>% unlist %>% array(dim = c(104,50)))) %>% 
+  select(-data) %>% 
+  ungroup
+
+rm(bat, family, species, temp)
+```
+
+```{r mean figures, fig.height = 4, fig.cap = "Plotted above the mean spectrogram for a randomly selected individual bat along with the species and family level mean spectrograms for that individual. These plots serve as a sense check on the data." }
+par(mfrow = c(1,3))
+b <- sample.int(by_bat %>% nrow, 1)
+
+by_bat %>% 
+  filter(bat == b)
+
+by_bat %>% 
+  filter(bat == b) %>% 
+  use_series(full) %>% extract2(1) %>% t %>% 
+  image(t, restricted_f, .,
+    col = brewer.pal(9, 'Spectral'),
+    xlab = 'Time', ylab = 'Frequency (kHz)',
+    main = paste('Mean Spectrogram for bat', b))
+
+s <- by_bat %>% use_series(species) %>% extract(b)
+by_species %>% 
+  filter(species == s) %>% 
+  use_series(full) %>% extract2(1) %>% t %>% 
+  image(t, restricted_f, .,
+    col = brewer.pal(9, 'Spectral'),
+    xlab = 'Time', ylab = 'Frequency (kHz)',
+    main = paste(s, 'Mean Spectrogram'))
+
+f <- by_bat %>% use_series(family) %>% extract(b)
+by_family %>% 
+  filter(family == f) %>% 
+  use_series(full) %>% extract2(1) %>% t %>% 
+  image(t, restricted_f, .,
+    col = brewer.pal(9, 'Spectral'),
+    xlab = 'Time', ylab = 'Frequency (kHz)',
+    main = paste(f, 'Mean Spectrogram'))
+par(mfrow = c(1,1))
+rm(b, s, f)
+```
+
+# Standard Deviation of Spectrograms
+
+What may also be of interest when considering these spectrograms is the standard deviation at each pixel over various levels of the sample.
+
+```{r sd spectrograms}
+family <- by_family %>% use_series(family)
+
+sd_family <- df %>% 
+  use_series(full) %>% 
+  unlist %>% 
+  array(dim = c(104*50, df %>% nrow)) %>%
+  apply(1, function(x) tapply(x, df %>% use_series(family), sd)) %>% 
+  as_tibble() %>% 
+  mutate(family = family) %>% 
+  select(family, starts_with('V')) %>% 
+  group_by(family) %>% 
+  nest %>% 
+  mutate(full = map(data, function(x) x %>% unlist %>% array(dim = c(104,50)))) %>% 
+  select(-data) %>% 
+  ungroup
+
+species <- by_species %>% use_series(species)
+family <- by_species %>% use_series(family)
+
+sd_species <- df %>% 
+  use_series(full) %>% 
+  unlist %>% 
+  array(dim = c(104*50, df %>% nrow)) %>%
+  apply(1, function(x) tapply(x, df %>% use_series(species), sd)) %>% 
+  as_tibble() %>% 
+  mutate(species = species, family = family) %>% 
+  select(species, family, starts_with('V')) %>% 
+  group_by(species, family) %>% 
+  nest %>% 
+  mutate(full = map(data, function(x) x %>% unlist %>% array(dim = c(104,50)))) %>% 
+  select(-data) %>% 
+  ungroup
+
+remove(family, species)
+```
+
+```{r sd figures, fig.height = 4, fig.cap = "Plotted above the sdample standard deviation over the  spectrogram for a randomly selected species of bat along with the family level and overall standard deviation spectrograms for that individual. These plots serve as a sense check on the data." }
+par(mfrow = c(1,3))
+b <- sample.int(sd_species %>% nrow, 1)
+
+s <- sd_species %>% use_series(species) %>% extract(b)
+sd_species %>% 
+  filter(species == s) %>% 
+  use_series(full) %>% extract2(1) %>% t %>% 
+  image(t, restricted_f, .,
+    col = brewer.pal(9, 'Spectral'),
+    xlab = 'Time', ylab = 'Frequency (kHz)',
+    main = paste(s, 'Standard Deviation Spectrogram'))
+
+f <- sd_species %>% use_series(family) %>% extract(b)
+by_family %>% 
+  filter(family == f) %>% 
+  use_series(full) %>% extract2(1) %>% t %>% 
+  image(t, restricted_f, .,
+    col = brewer.pal(9, 'Spectral'),
+    xlab = 'Time', ylab = 'Frequency (kHz)',
+    main = paste(f, 'Standard Deviation Spectrogram'))
+
+df %>% 
+  use_series(full) %>% 
+  unlist %>% 
+  array(dim = c(104*50, df %>% nrow)) %>%
+  apply(1, sd) %>%
+  array(dim = c(104,50)) %>% 
+  t %>% 
+  image(t, restricted_f, .,
+    col = brewer.pal(9, 'Spectral'),
+    xlab = 'Time', ylab = 'Frequency (kHz)',
+    main = 'Overall Standard Deviation Spectrogram')
+par(mfrow = c(1,1))
+rm(b, s, f)
+```
+
+# Bootstrapped Sample
+
+As there is variation in the number of bats per species and calls per bat in this sample I think that it is appropriate to create a bootstrapped sample of calls upon which to run the analysis. Note also that it is the mean spectrogram per each species that we are particularl interested in and so the bootstrapped sample will contain estimates of the mean spectrogram per each species.
+
+```{r bootstrapped sample}
+temp <- df %>% 
+  group_by(bat) %>% 
+  sample_n(1) %>% 
+  ungroup %>% 
+  group_by(species) %>% 
+  sample_n(4) %>% 
+  ungroup
+
+boot_mean <- df %>% 
+  group_by(species) %>% 
+  summarise(family = unique(family)) %>% 
+  ungroup %>% 
+  cbind(
+    check <- temp %>%
+      use_series(full) %>% 
+      unlist %>% 
+      array(dim = c(104*50, temp %>% nrow)) %>% 
+      apply(1, function(x) tapply(x, temp %>% use_series(species), mean))
+  ) %>% 
+  group_by(species, family) %>% 
+  nest %>%
+  mutate(full = map(data, function(x) x %>% unlist %>% array(dim = c(104,50)))) %>% 
+  select(-data) %>% 
+  ungroup
+
+for(i in 1:24){
+  temp <- df %>% 
+    group_by(bat) %>% 
+    sample_n(1) %>% 
+    ungroup %>% 
+    group_by(species) %>% 
+    sample_n(4) %>% 
+    ungroup
+  
+  temp_mean <- df %>% 
+  group_by(species) %>% 
+  summarise(family = unique(family)) %>% 
+  ungroup %>% 
+  cbind(
+    check <- temp %>%
+      use_series(full) %>% 
+      unlist %>% 
+      array(dim = c(104*50, temp %>% nrow)) %>% 
+      apply(1, function(x) tapply(x, temp %>% use_series(species), mean))
+  ) %>% 
+  group_by(species, family) %>% 
+  nest %>%
+  mutate(full = map(data, function(x) x %>% unlist %>% array(dim = c(104,50)))) %>% 
+  select(-data) %>% 
+  ungroup
+  
+  boot_mean <- rbind(boot_mean, temp_mean)
+  remove(temp, temp_mean)
+}
+
+boot_mean <- boot_mean %>% 
+  arrange(species)
+```
+
+```{r bootstrapped sample tree}
+n_samples <- 25
+boot_tree <- phylogeny
+
+for(i in phylogeny %>% use_series(tip.label)){
+  individuals <- stree(n_samples)
+  individuals$edge.length <- rep(0, n_samples)
+  individuals$tip.label <- rep(i, n_samples)
+  
+  boot_tree <- bind.tree(boot_tree, individuals, which(boot_tree$tip.label == i))
+}
+
+rm(individuals, n_samples)
+```
+
+# Principal Components as Evolutionary Features
+
+A Principal Components Analysis is performed on the data, yielding a dimension reduction along modes of variation. Each principal component can be considered to be a suite of evolutionary features, with each suite being orthogonal to every other suite.
+
+```{r pca}
+pca <- boot_mean %>% 
+  use_series(full) %>%
+  unlist %>% 
+  array(dim = c(50*104, df %>% nrow)) %>% 
+  extract(, sample.int(df %>% nrow)) %>% 
+  t %>% 
+  prcomp
+```
+
+## Component Scores
+
+See Figure 2.
+
+```{r scores, fig.cap = "The scores associated with each component provide insight into the proportion of the sample variance captured by the corresponding principal component. This PCA was performed on a sample of bootstrapped mean estimates, so some of the bat level variation should have been stripped from the data. The bootstrapped sample was also weighted with the same number of samples from each species, an attempt at ensuring no one species dominated modes of variation identified. The scores above suggest that the dataset of echolocation call spectrograms is very high dimensional, requiring 13 components to explain 75% of the variance, while 16 are required to explain 90%. It can be shown that 9 components capture more than 2.5% of the variation, and 14 capture more than 1% of the variation."}
+s_var <- pca %>% use_series(sdev) %>% raise_to_power(2) %>% sum
+
+#pca %>% use_series(sdev) %>% raise_to_power(2) %>% divide_by(s_var) %>% cumsum %>% is_less_than(0.9) %>% sum
+#pca %>% use_series(sdev) %>% raise_to_power(2) %>% divide_by(s_var) %>% is_greater_than(0.01) %>% sum
+
+n <- 20
+
+pca %>% use_series(sdev) %>% raise_to_power(2) %>% 
+  extract(1:n) %>% divide_by(s_var) %>% cumsum %>% 
+  plot(xlab = 'Component', ylab = 'Proportion', main = 'Variance Explained',
+    pch = 19, col = 2, ylim = c(0, 1))
+pca %>% use_series(sdev) %>% raise_to_power(2) %>% 
+  extract(1:n) %>% divide_by(s_var) %>% cumsum %>% 
+  lines(col = 2)
+pca %>% use_series(sdev) %>% raise_to_power(2) %>% 
+  extract(1:n) %>% divide_by(s_var) %>% 
+  points(col = 3, pch = 19)
+pca %>% use_series(sdev) %>% raise_to_power(2) %>% 
+  extract(1:n) %>% divide_by(s_var) %>% 
+  lines(col = 3)
+
+legend('topleft', legend = c('Cumulative Sum', 'Per Component'), pch = 19, col = c(2,3))
+rm(s_var, n)
+```
+
+```{r centre spectrograms}
+boot_mean <- boot_mean %>% 
+  mutate(centred = map(full, function(x) x %>% subtract(pca %>% use_series(center))))
+```
+
+## Score Distribution
+
+See Figure 3.
+
+```{r pc scores}
+n <- 15
+
+pc_scores <- boot_mean %>% 
+  select(species, family) %>% 
+  cbind(pca %>% 
+    use_series(rotation) %>% 
+    extract(, 1:n) %>% 
+    t %>% 
+    multiply_by_matrix( boot_mean %>%
+        select(centred) %>%
+        unlist %>% 
+        array(dim = c(104*50, boot_mean %>% nrow))
+    ) %>% 
+    apply(2, divide_by, pca %>% use_series(sdev) %>% extract(1:n)) %>% 
+    t %>% 
+    as_tibble
+  )
+```
+
+```{r, fig.cap = "Distribution of component scores for a selected Principal component loading, separated out by species."}
+pc_scores %>% 
+  ggplot() +
+  geom_density_ridges(aes(x = PC1, y = species, color = family, fill = family)) +
+  scale_colour_brewer(palette = "Dark2") +
+  scale_fill_brewer(palette = "Dark2") +
+  labs(
+    title = 'Principal Component Scores',
+    y = 'Species'
+  )
+```
+
+It seems reasonable to think that those principal components which explain most variation would be capturing variation between species rather than within species, but is there some clever way to check this?
+
+## Component PGP Hyperparameters
+
+Hyperparameters for the phylogenetic Gaussian Processes can be estimated from these principal components
+
+```{r pc hyperparameters}
+pc_mle <- pc_scores %>% 
+  select(starts_with('PC')) %>%
+  apply(2, sdsBAT:::pou_type2mle, boot_tree, logl_function = pou_logl_fast,
+  optim_function = "optim", optim_method = "Nelder-Mead",
+  lower_initialisation = c(0, 0, 0), upper_initialisation = c(1, 100, 1),
+  n_restarts = 5)
+
+rownames(pc_mle) <- c('s_p', 'l', 's_n', 'logl')
+
+print('BOOTSTRAPPED PC MLE HYP')
+pc_mle %>% round(2)
+```
+
+**The components should be scaled by the square root of the associated eigen value anyway, this will lead to approx** $\mathcal{N}(0, 1)$ **distributed scores, I think, although I don't have a reference for this result, thus scaling in this way is appropriate. Scaling also makes the optimisation of the likelihood more straightforward as it has not been 'streched' over such a large region and has an easire time finding a maximum**
+
+## Approximation of Species level Mean Spectrograms
+
+One approach to investigating the quality of the components identified is to consider how much the projection of a spectrogram into a component space differs from the original.
+
+```{r project species level}
+by_species <- by_species %>% 
+  mutate(centred = map(full, function(x) x %>% subtract(pca %>% use_series(center))))
+
+n <- 15
+
+by_species_proj <- by_species %>% 
+  select(species) %>% 
+  cbind(
+    pca %>%
+      use_series(rotation) %>% 
+      extract(, 1:n) %>% 
+      t %>% 
+      multiply_by_matrix( by_species %>%
+          select(centred) %>%
+          unlist %>% 
+          array(dim = c(104*50, by_species %>% nrow))
+      ) %>% 
+      t %>% 
+      multiply_by_matrix(
+        pca %>% 
+          use_series(rotation) %>% 
+          extract(, 1:n) %>% 
+          t
+      ) %>% 
+      as_tibble()
+  ) %>% 
+  group_by(species) %>% 
+  nest %>% 
+  mutate(projection = map(data, function(x){
+    x %>% unlist %>% add(pca %>% use_series(center)) %>% array(dim = c(104, 50))
+  })) %>% 
+  select(-data)
+```
+
+```{r actual vs. projection, fig.height = 4, fig.cap = "Plotted above the mean spectrogram for a randomly selected species alongside the call reconstructed from the component space. Based on this plot taking 15 components seems to result in excellent reconstructions of the mean species level calls, where all the salient features are preserved."}
+s <- sample(by_species %>% use_series(species), 1)
+
+par(mfrow = c(1,2))
+by_species %>% 
+  filter(species == s) %>% 
+  use_series(full) %>% extract2(1) %>% t %>% 
+  image(t, restricted_f, .,
+    col = brewer.pal(9, 'Spectral'),
+    xlab = 'Time', ylab = 'Frequency (kHz)',
+    main = paste(s, 'Mean Spectrogram'))
+
+by_species_proj %>% 
+  filter(species == s) %>% 
+  use_series(projection) %>% extract2(1) %>% t %>% 
+  image(t, restricted_f, .,
+    col = brewer.pal(9, 'Spectral'),
+    xlab = 'Time', ylab = 'Frequency (kHz)',
+    main = paste(s, 'Projected Spectrogram'))
+par(mfrow = c(1,1))
+```
+
+## Exploration of Components
+
+```{r global mean spectrogram}
+global <- pca %>% 
+  use_series(center) %>% 
+  array(dim = c(104, 50))
+
+global %>% 
+  t %>% 
+  image(t, restricted_f, .,
+    col = brewer.pal(9, 'Spectral'),
+    xlab = 'Time', ylab = 'Frequency (kHz)',
+    main = 'Global Mean Spectrogram')
+```
+
+```{r second animate, eval = F, echo = T}
+#dir.create("animation")
+setwd("animation")
+
+n <- 3
+
+lambda <- seq(from = -2, to  = 2, length.out = 201)
+
+component <- pca %>% 
+  use_series(rotation) %>%
+  extract(, n) %>% 
+  array(dim = c(104, 50)) %>% 
+  multiply_by(pca %>% use_series(sdev) %>% extract(n))
+
+for(i in seq_along(lambda)){
+  png(file=paste('example', sprintf("%03d", i), '.png', sep = ''), width=800, height=600)
+  component %>%
+    multiply_by(lambda[i]) %>% 
+    add(global) %>% 
+    t %>%
+    image(t, restricted_f, ., 
+      col = brewer.pal(9, 'Spectral'), 
+      xlab = 'Time (ms)', ylab = 'Frequency (kHz)', 
+      main = paste('Global Mean Spectrogram plus\n', lambda[i] %>% round(1),'times component' ,n))
+  dev.off()
+}
+
+system('"C:/Program Files/ImageMagick-7.0.7-Q16/magick.exe" *.png -delay 50 pc3.gif')
+file.remove(list.files(pattern=".png"))
+```
+
+## Ancestral Reconstruction from Principal Components
+
+The goal of this analysis is Ancestral Reconstruction of Echolocation Call spectrograms. Verifying ancestral calls is impossible, however perhaps we can get a feel for the effectiveness of the method by attempting an Ancestral reconsturction style posterior predictive spectrogram for exisiting species. This amounts to a leave one species out cross validation.
+
+
+```{r loso estimates}
+ou_K <- function(distance_matrix, ln_hyperparameters){
+  sp <- exp(2*ln_hyperparameters[1])
+  l <- exp(ln_hyperparameters[2])
+  sn <- exp(2*ln_hyperparameters[3])
+  
+  K <- distance_matrix %>% 
+    abs %>%
+    multiply_by(-1) %>% 
+    divide_by(l) %>% 
+    exp %>%
+    multiply_by(sp) %>% 
+    add(distance_matrix %>% nrow %>% diag %>% multiply_by(sn))
+  
+  return(K)
+}
+
+sp <- by_species %>% use_series(species)
+pc <- colnames(pc_mle)
+
+D <- cophenetic.phylo(boot_tree)
+
+sp_map <- matrix(nrow = sp %>% length, ncol = pc %>% length) %>% 
+  set_rownames(sp) %>% 
+  set_colnames(pc)
+
+sp_post_var <- matrix(nrow = sp %>% length, ncol = pc %>% length) %>% 
+  set_rownames(sp) %>% 
+  set_colnames(pc)
+
+for(i in sp){
+  for(j in pc){
+    K <- ou_K(D, pc_mle %>% extract(1:3, j) %>%  log)
+    inv_K_obs <- K[rownames(K) != i, colnames(K) != i] %>% solve
+    
+    sp_map[i, j] <- K[i %>% as.character, colnames(K) != i] %>% 
+      multiply_by_matrix(inv_K_obs) %>% 
+      multiply_by_matrix(pc_scores %>% filter(species != i) %>% extract2(j))
+    
+    sp_post_var[i, j] <- K[i %>% as.character, i %>% as.character] %>%
+      subtract(
+        K[i %>% as.character, colnames(K) != i] %>% 
+          multiply_by_matrix(inv_K_obs) %>%
+          multiply_by_matrix(K[colnames(K) != i, i %>% as.character])
+        )
+  }
+}
+```
+
+```{r posterior distribution plot, fig.cap = "Shown above is a comparison of the empirical mean component score distribution (black) against the posterior predictive distribution for that score (red) alongside the posterior predictive distribution with the non-phylogenetic nois stripped out (blue). Plots of this nature demonstrate that while the empirical distribution tends to fall into the posterior predictive distribution, this is largely due to the posterior supporting a very wide region."}
+s <- sample(sp, 1)
+p <- 'PC1'
+
+pc_scores %>% filter(species == s) %>%
+  ggplot() +
+  geom_density(aes(PC1)) +
+  xlim(-3,3) +
+  stat_function(fun = dnorm, 
+        args = list(mean = sp_map %>% extract(s, p), 
+                    sd = sp_post_var %>% extract(s, p) %>% sqrt), 
+        colour = 'red', size = 1) +
+  stat_function(fun = dnorm, 
+        args = list(mean = sp_map %>% extract(s, p), 
+                    sd = sp_post_var %>% extract(s, p) %>% 
+            subtract(pc_mle %>% extract(3, p) %>% raise_to_power(2)) %>% sqrt), 
+        colour = 'blue', size = 1) +
+  labs(
+    title = s
+  )
+```
+
+```{r spectrogram reconstruction}
+loso_recon <- sp_map %>% 
+  multiply_by_matrix(
+    pca %>% 
+      use_series(rotation) %>% 
+      extract(,1:15) %>% 
+      apply(1, multiply_by, pca %>% use_series(sdev) %>% extract(1:15))
+  ) %>% 
+  as_tibble() %>% 
+  cbind(by_species %>% select(species, family), .) %>% 
+  group_by(species, family) %>% 
+  nest %>%
+  mutate(centred = map(data, function(x) x %>% unlist %>% array(dim = c(104,50)))) %>% 
+  select(-data) %>% 
+  ungroup %>% 
+  mutate(full = map(centred, function(x) x %>% add(pca %>% use_series(center))))
+```
+
+```{r comparison of reconstruction, fig.cap = "Illustrated here is a LOSO reconstructed spectrogram alongside the actual mean spectrogram for that species." }
+s <- sample(loso_recon %>% use_series(species), 1)
+
+par(mfrow = c(1,2))
+loso_recon %>% 
+  filter(species == s) %>% 
+  use_series(full) %>% extract2(1) %>% t %>% 
+  image(t, restricted_f, .,
+    col = brewer.pal(9, 'Spectral'),
+    xlab = 'Time', ylab = 'Frequency (kHz)',
+    main = paste(s, 'Reconstructed Spectrogram'))
+
+by_species %>% 
+  filter(species == s) %>% 
+  use_series(full) %>% extract2(1) %>% t %>% 
+  image(t, restricted_f, .,
+    col = brewer.pal(9, 'Spectral'),
+    xlab = 'Time', ylab = 'Frequency (kHz)',
+    main = paste(s, 'Mean Spectrogram'))
+par(mfrow = c(1,1))
+
+```
+
+## Ancestral Reconstruction
+
+The final stage of this analysis is to perform an ancestral reconstruction for internal nodes of the tree.
+
+```{r ancestral reconstruction}
+pc <- colnames(pc_mle)
+D <- dist.nodes(boot_tree)
+
+anc <- colnames(D) %>% extract(-550:-1)
+
+ancestral_map <- matrix(nrow = anc %>% length, ncol = pc %>% length) %>% 
+  set_rownames(anc) %>% 
+  set_colnames(pc)
+
+ancestral_post_var <- matrix(nrow = anc %>% length, ncol = pc %>% length) %>% 
+  set_rownames(anc) %>% 
+  set_colnames(pc)
+
+for(i in anc){
+  for(j in pc){
+    K <- ou_K(D, pc_mle %>% extract(1:3, j) %>%  log)
+    inv_K_obs <- K[!(rownames(K) %in% anc), !(colnames(K) %in% anc)] %>% solve
+    
+    ancestral_map[i, j] <- K[i %>% as.character, !(colnames(K) %in% anc)] %>% 
+      multiply_by_matrix(inv_K_obs) %>% 
+      multiply_by_matrix(pc_scores %>% extract2(j))
+    
+    ancestral_post_var[i, j] <- K[i %>% as.character, i %>% as.character] %>%
+      subtract(
+        K[i %>% as.character, !(colnames(K) %in% anc)] %>% 
+          multiply_by_matrix(inv_K_obs) %>%
+          multiply_by_matrix(K[!(colnames(K) %in% anc), i %>% as.character])
+        )
+  }
+}
+
+ancestor <-  c('23', '24','25', '26', '27', 'Arja', '28', 'Stli', 'Stlu', '29', '30', 'Dero', 'Maca', 'Leye', '31', 'Mome', '32', 'Ptpa', '33', 'Ptda', 'Ptpe', '34', '35', '36', '37', '38', 'Anpa', 'Pihe', 'Epfu', 'Idph', '39', '40', 'Laci', '41', 'Labl', 'Laxa', '42', 'Myvo', 'Myyu', '43', 'Tabr', 'Nyfe', 'Bapl' ) %>% factor
+
+ancestral_recon <- ancestral_map %>% 
+  multiply_by_matrix(
+    pca %>% 
+      use_series(rotation) %>% 
+      extract(,1:15) %>% 
+      apply(1, multiply_by, pca %>% use_series(sdev) %>% extract(1:15))
+  ) %>% 
+  as_tibble() %>% 
+  cbind(ancestor, .) %>% 
+  group_by(ancestor) %>% 
+  nest %>%
+  mutate(centred = map(data, function(x) x %>% unlist %>% array(dim = c(104,50)))) %>% 
+  select(-data) %>% 
+  ungroup %>% 
+  mutate(full = map(centred, function(x) x %>% add(pca %>% use_series(center))))
+```
+
+
+```{r ancestral spectrogram reconstruction for extant, fig.cap = "Tis is a comparison of the ancestrally reconstructed species level spectrogram, given observations from that species. This plot serves only as a sense check."}
+s <- by_species %>% use_series(species) %>% sample(1) %>% as.character
+
+par(mfrow = c(1,2))
+ancestral_recon %>% 
+  filter(ancestor == s) %>% 
+  use_series(full) %>% extract2(1) %>% t %>% 
+  image(t, restricted_f, .,
+    col = brewer.pal(9, 'Spectral'),
+    xlab = 'Time', ylab = 'Frequency (kHz)',
+    main = paste(s, 'Reconstructed Spectrogram'))
+
+by_species %>% 
+  filter(species == s) %>% 
+  use_series(full) %>% extract2(1) %>% t %>% 
+  image(t, restricted_f, .,
+    col = brewer.pal(9, 'Spectral'),
+    xlab = 'Time', ylab = 'Frequency (kHz)',
+    main = paste(s, 'Mean Spectrogram'))
+par(mfrow = c(1,1))
+```
+
+```{r view tree, fig.cap="Figure showing node labels on the tree to figure out ancestral species labels"}
+plot.phylo(phylogeny)
+nodelabels()
+```
+
+```{r ancestors, fig.cap = "The Principal components reconstructed spectrograms can be produced for any point on the assumed Phylogeny."}
+s <- '39'
+ancestral_recon %>% 
+  filter(ancestor == s) %>% 
+  use_series(full) %>% extract2(1) %>% t %>% 
+  image(t, restricted_f, .,
+    col = brewer.pal(9, 'Spectral'),
+    xlab = 'Time', ylab = 'Frequency (kHz)',
+    main = paste(s, 'Reconstructed Spectrogram'))
+```
+
+## Approximation of Spectrograms in the Time Domain
+
+For the communication of my findings it will be important to have time domain representations of these spectrograms
+

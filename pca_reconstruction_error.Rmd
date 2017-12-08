@@ -1,0 +1,475 @@
+---
+title: "Untitled"
+author: "J.P. Meagher"
+date: "29 November 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, message = F)
+```
+
+This study considers Principal Components as Evolutionary Features and investigates the quality of reconstructions taking the mean absolute error between actual and reconstructed echolocation call spectrograms. This will then be investigated in the context of a LOSO-CV of phylogenetic reconstructions of call spectrograms.
+
+```{r packages}
+library(signal) # Produce Spectrogram
+library(tidyverse) # see http://r4ds.had.co.nz/
+library(magrittr) # pipe operator and alaises
+library(batwork) # my own package, long form call data
+library(sdsBAT) # my own package, tree data and functions for ancestral reconstruction
+library(ape) # Analyses of Phylogenetics and Evolution
+library(RColorBrewer) # for pretty pictures
+library(ggridges) # Joy plots
+library(ggtree) ## ggplot for phylogenetic trees
+```
+
+```{r data}
+sp <- sdsBAT::phylogeny$tip.label
+
+df <- readRDS('preprocessed_calls.RDS') %>% 
+  select(bat, species, family, full) %>% 
+  mutate(species = factor(species, levels = sp))
+
+t <- seq(from = 0, to = 1, length.out = 100) %>% 
+  extract(c(F, T))
+
+f <- seq(from = 0, to = 250, length.out = 257)
+restricted_f <- f %>% 
+  extract(f > 9 & f < 212) %>% 
+  extract(c(F, T))
+
+remove(sp, f)
+```
+
+```{r mean spectrograms}
+temp <- df %>% 
+  group_by(bat, family) %>% 
+  summarise(species = unique(species))
+
+bat <- temp %>% use_series(bat)
+species <- temp %>% use_series(species)
+family <- temp %>% use_series(family)
+
+by_bat <- df %>% 
+  use_series(full) %>% 
+  unlist %>% 
+  array(dim = c(104*50, df %>% nrow)) %>%
+  apply(1, function(x) tapply(x, df %>% use_series(bat), mean)) %>% 
+  as_tibble() %>% 
+  mutate(bat = bat, species = species, family = family) %>% 
+  select(bat, species, family, starts_with('V')) %>% 
+  group_by(bat, family, species) %>% 
+  nest %>% 
+  mutate(full = map(data, function(x) x %>% unlist %>% array(dim = c(104,50)))) %>% 
+  select(-data) %>% 
+  ungroup
+
+temp <- by_bat %>% 
+  group_by(species) %>% 
+  summarise(family = unique(family))
+
+species <- temp %>% use_series(species)
+family <- temp %>% use_series(family)
+
+
+by_species <- by_bat %>% 
+  use_series(full) %>% 
+  unlist %>% 
+  array(dim = c(104*50, by_bat %>% nrow)) %>%
+  apply(1, function(x) tapply(x, by_bat %>% use_series(species), mean)) %>% 
+  as_tibble() %>% 
+  mutate(species = species, family = family) %>% 
+  select(species, family, starts_with('V')) %>% 
+  group_by(family, species) %>% 
+  nest %>% 
+  mutate(full = map(data, function(x) x %>% unlist %>% array(dim = c(104,50)))) %>% 
+  select(-data) %>% 
+  ungroup
+
+family <- by_species %>% use_series(family) %>% unique
+
+by_family <- by_species %>% 
+  use_series(full) %>% 
+  unlist %>% 
+  array(dim = c(104*50, by_species %>% nrow)) %>%
+  apply(1, function(x) tapply(x, by_species %>% use_series(family), mean)) %>% 
+  as_tibble() %>% 
+  mutate(family = family) %>% 
+  select(family, starts_with('V')) %>% 
+  group_by(family) %>% 
+  nest %>% 
+  mutate(full = map(data, function(x) x %>% unlist %>% array(dim = c(104,50)))) %>% 
+  select(-data) %>% 
+  ungroup
+
+rm(bat, family, species, temp)
+```
+
+```{r bootstrapped sample}
+temp <- df %>% 
+  group_by(bat) %>% 
+  sample_n(1) %>% 
+  ungroup %>% 
+  group_by(species) %>% 
+  sample_n(4) %>% 
+  ungroup
+
+boot_mean <- df %>% 
+  group_by(species) %>% 
+  summarise(family = unique(family)) %>% 
+  ungroup %>% 
+  cbind(
+    check <- temp %>%
+      use_series(full) %>% 
+      unlist %>% 
+      array(dim = c(104*50, temp %>% nrow)) %>% 
+      apply(1, function(x) tapply(x, temp %>% use_series(species), mean))
+  ) %>% 
+  group_by(species, family) %>% 
+  nest %>%
+  mutate(full = map(data, function(x) x %>% unlist %>% array(dim = c(104,50)))) %>% 
+  select(-data) %>% 
+  ungroup
+
+for(i in 1:24){
+  temp <- df %>% 
+    group_by(bat) %>% 
+    sample_n(1) %>% 
+    ungroup %>% 
+    group_by(species) %>% 
+    sample_n(4) %>% 
+    ungroup
+  
+  temp_mean <- df %>% 
+  group_by(species) %>% 
+  summarise(family = unique(family)) %>% 
+  ungroup %>% 
+  cbind(
+    check <- temp %>%
+      use_series(full) %>% 
+      unlist %>% 
+      array(dim = c(104*50, temp %>% nrow)) %>% 
+      apply(1, function(x) tapply(x, temp %>% use_series(species), mean))
+  ) %>% 
+  group_by(species, family) %>% 
+  nest %>%
+  mutate(full = map(data, function(x) x %>% unlist %>% array(dim = c(104,50)))) %>% 
+  select(-data) %>% 
+  ungroup
+  
+  boot_mean <- rbind(boot_mean, temp_mean)
+  remove(temp, temp_mean)
+}
+
+boot_mean <- boot_mean %>% 
+  arrange(species)
+```
+
+```{r bootstrapped sample tree}
+n_samples <- 25
+boot_tree <- phylogeny
+
+for(i in phylogeny %>% use_series(tip.label)){
+  individuals <- stree(n_samples)
+  individuals$edge.length <- rep(0, n_samples)
+  individuals$tip.label <- rep(i, n_samples)
+  
+  boot_tree <- bind.tree(boot_tree, individuals, which(boot_tree$tip.label == i))
+}
+
+rm(individuals, n_samples)
+```
+
+```{r pca}
+pca <- boot_mean %>% 
+  use_series(full) %>%
+  unlist %>% 
+  array(dim = c(50*104, df %>% nrow)) %>% 
+  extract(, sample.int(df %>% nrow)) %>% 
+  t %>% 
+  prcomp
+```
+
+```{r centre spectrograms}
+boot_mean <- boot_mean %>% 
+  mutate(centred = map(full, function(x) x %>% subtract(pca %>% use_series(center))))
+```
+
+```{r pc scores}
+n <- 15
+
+pc_scores <- boot_mean %>% 
+  select(species, family) %>% 
+  cbind(pca %>% 
+    use_series(rotation) %>% 
+    extract(, 1:n) %>% 
+    t %>% 
+    multiply_by_matrix( boot_mean %>%
+        select(centred) %>%
+        unlist %>% 
+        array(dim = c(104*50, boot_mean %>% nrow))
+    ) %>% 
+    apply(2, divide_by, pca %>% use_series(sdev) %>% extract(1:n)) %>% 
+    t %>% 
+    as_tibble
+  )
+```
+
+```{r pc hyperparameters}
+pc_mle <- pc_scores %>% 
+  select(starts_with('PC')) %>%
+  apply(2, sdsBAT:::pou_type2mle, boot_tree, logl_function = pou_logl_fast,
+  optim_function = "optim", optim_method = "Nelder-Mead",
+  lower_initialisation = c(0, 0, 0), upper_initialisation = c(1, 100, 1),
+  n_restarts = 5)
+
+rownames(pc_mle) <- c('s_p', 'l', 's_n', 'logl')
+
+print('BOOTSTRAPPED PC MLE HYP')
+pc_mle %>% round(2)
+```
+
+```{r project species level}
+by_species <- by_species %>% 
+  mutate(centred = map(full, function(x) x %>% subtract(pca %>% use_series(center))))
+
+n <- 15
+
+by_species_proj <- by_species %>% 
+  select(species) %>% 
+  cbind(
+    pca %>%
+      use_series(rotation) %>% 
+      extract(, 1:n) %>% 
+      t %>% 
+      multiply_by_matrix( by_species %>%
+          select(centred) %>%
+          unlist %>% 
+          array(dim = c(104*50, by_species %>% nrow))
+      ) %>% 
+      t %>% 
+      multiply_by_matrix(
+        pca %>% 
+          use_series(rotation) %>% 
+          extract(, 1:n) %>% 
+          t
+      ) %>% 
+      as_tibble()
+  ) %>% 
+  group_by(species) %>% 
+  nest %>% 
+  mutate(projection = map(data, function(x){
+    x %>% unlist %>% add(pca %>% use_series(center)) %>% array(dim = c(104, 50))
+  })) %>% 
+  select(-data)
+```
+
+When comparing the spectrograms there could be magnitude and scale differences between spectrograms, which do not affect our interpretation of the spectrogram but which do lead to reconstruction errors. With this in mind, spectrograms will be rescaled to lie on the interval $[0,1]$ before calculating error metrics.
+
+```{r error metric}
+mae <- function(x, y){
+  x %>% subtract(y) %>% abs %>% mean
+}
+
+scaled_mae <- function(x, y){
+  new_x <- x %>% subtract(x %>% min)
+  new_x <- new_x %>% divide_by(new_x %>% max)
+  
+  new_y <- y %>% subtract(y %>% min)
+  new_y <- new_y %>% divide_by(new_y %>% max)
+  
+  new_x %>% subtract(new_y) %>% abs %>% mean
+}
+
+by_species_proj <- by_species_proj %>% 
+  mutate(scaled_mae = NA, mae = NA)
+
+for(i in by_species_proj %>% nrow %>% seq.int){
+  by_species_proj[i, 'scaled_mae'] <- scaled_mae(by_species[i, 'full'][[1]][[1]], by_species_proj[i, 'projection'][[1]][[1]])
+  by_species_proj[i, 'mae'] <- mae(by_species[i, 'full'][[1]][[1]], by_species_proj[i, 'projection'][[1]][[1]])
+}
+
+#by_species_proj %>% use_series(mae)
+#by_species_proj %>% use_series(scaled_mae)
+
+```
+
+```{r loso estimates}
+ou_K <- function(distance_matrix, ln_hyperparameters){
+  sp <- exp(2*ln_hyperparameters[1])
+  l <- exp(ln_hyperparameters[2])
+  sn <- exp(2*ln_hyperparameters[3])
+  
+  K <- distance_matrix %>% 
+    abs %>%
+    multiply_by(-1) %>% 
+    divide_by(l) %>% 
+    exp %>%
+    multiply_by(sp) %>% 
+    add(distance_matrix %>% nrow %>% diag %>% multiply_by(sn))
+  
+  return(K)
+}
+
+sp <- by_species %>% use_series(species)
+pc <- colnames(pc_mle)
+
+D <- cophenetic.phylo(boot_tree)
+
+sp_map <- matrix(nrow = sp %>% length, ncol = pc %>% length) %>% 
+  set_rownames(sp) %>% 
+  set_colnames(pc)
+
+sp_post_var <- matrix(nrow = sp %>% length, ncol = pc %>% length) %>% 
+  set_rownames(sp) %>% 
+  set_colnames(pc)
+
+for(i in sp){
+  for(j in pc){
+    K <- ou_K(D, pc_mle %>% extract(1:3, j) %>%  log)
+    inv_K_obs <- K[rownames(K) != i, colnames(K) != i] %>% solve
+    
+    sp_map[i, j] <- K[i %>% as.character, colnames(K) != i] %>% 
+      multiply_by_matrix(inv_K_obs) %>% 
+      multiply_by_matrix(pc_scores %>% filter(species != i) %>% extract2(j))
+    
+    sp_post_var[i, j] <- K[i %>% as.character, i %>% as.character] %>%
+      subtract(
+        K[i %>% as.character, colnames(K) != i] %>% 
+          multiply_by_matrix(inv_K_obs) %>%
+          multiply_by_matrix(K[colnames(K) != i, i %>% as.character])
+        )
+  }
+}
+```
+
+```{r spectrogram reconstruction}
+loso_recon <- sp_map %>% 
+  multiply_by_matrix(
+    pca %>% 
+      use_series(rotation) %>% 
+      extract(,1:15) %>% 
+      apply(1, multiply_by, pca %>% use_series(sdev) %>% extract(1:15))
+  ) %>% 
+  as_tibble() %>% 
+  cbind(by_species %>% select(species, family), .) %>% 
+  group_by(species, family) %>% 
+  nest %>%
+  mutate(centred = map(data, function(x) x %>% unlist %>% array(dim = c(104,50)))) %>% 
+  select(-data) %>% 
+  ungroup %>% 
+  mutate(full = map(centred, function(x) x %>% add(pca %>% use_series(center))))
+
+loso_recon <- loso_recon %>% 
+  mutate(mae = NA, scaled_mae = NA)
+
+for(i in loso_recon %>% nrow %>% seq.int){
+  loso_recon[i, 'mae'] <- mae(by_species[i, 'full'][[1]][[1]], loso_recon[i, 'full'][[1]][[1]])
+  loso_recon[i, 'scaled_mae'] <- scaled_mae(by_species[i, 'full'][[1]][[1]], loso_recon[i, 'full'][[1]][[1]])
+}
+```
+
+
+```{r}
+order <- phylogeny %>% 
+  fortify %>% 
+  subset(isTip) %>% 
+  with(label[order(y, decreasing=T)])
+
+index <- sapply(loso_recon$species, function(x) which(order == x))
+
+order <- factor(order, levels = rev(order))
+
+plot_a <- ggtree(phylogeny) +
+  geom_tiplab(hjust = 0.5, offset = 2) +
+  theme(plot.margin = margin(1, 0, 0.75, 0, "cm")) +
+  labs(
+    title = 'Bat Phylogenetic Tree'
+  )
+
+plot_b <- loso_recon %>%
+  mutate(refactored_species = order[index]) %>% 
+  ggplot() +
+  geom_point(aes(x = mae, y = refactored_species, color = family)) +
+  theme(
+    axis.text.y = element_blank(), 
+    axis.ticks.y = element_blank(),
+    legend.position = 'none') +
+  labs(
+    title = 'Mean Absolute Error\nof LOSO-CV\nReconstruction',
+    x = 'Absolute Error',
+    y = ''
+  )
+
+plot_c <- loso_recon %>%
+  mutate(refactored_species = order[index]) %>% 
+  ggplot() +
+  geom_point(aes(x = scaled_mae, y = refactored_species, color = family)) +
+  labs(
+    title = 'Scaled Mean Absolute\nError of LOSO-CV\nReconstruction',
+    x = 'Scaled Absolute Error',
+    y = ''
+  )
+
+gridExtra::grid.arrange(plot_a, plot_c, ncol = 2)
+gridExtra::grid.arrange(plot_a, plot_b, plot_c, ncol=3)
+#cowplot::plot_grid(plot_a, plot_b, labels=c('A', 'B'))
+remove(plot_a, plot_b, plot_c)
+
+index %>% c
+
+order[index] == by_species_proj$species
+```
+
+```{r ancestral reconstruction}
+pc <- colnames(pc_mle)
+D <- dist.nodes(boot_tree)
+
+anc <- colnames(D) %>% extract(-550:-1)
+
+ancestral_map <- matrix(nrow = anc %>% length, ncol = pc %>% length) %>% 
+  set_rownames(anc) %>% 
+  set_colnames(pc)
+
+ancestral_post_var <- matrix(nrow = anc %>% length, ncol = pc %>% length) %>% 
+  set_rownames(anc) %>% 
+  set_colnames(pc)
+
+for(i in anc){
+  for(j in pc){
+    K <- ou_K(D, pc_mle %>% extract(1:3, j) %>%  log)
+    inv_K_obs <- K[!(rownames(K) %in% anc), !(colnames(K) %in% anc)] %>% solve
+    
+    ancestral_map[i, j] <- K[i %>% as.character, !(colnames(K) %in% anc)] %>% 
+      multiply_by_matrix(inv_K_obs) %>% 
+      multiply_by_matrix(pc_scores %>% extract2(j))
+    
+    ancestral_post_var[i, j] <- K[i %>% as.character, i %>% as.character] %>%
+      subtract(
+        K[i %>% as.character, !(colnames(K) %in% anc)] %>% 
+          multiply_by_matrix(inv_K_obs) %>%
+          multiply_by_matrix(K[!(colnames(K) %in% anc), i %>% as.character])
+        )
+  }
+}
+
+ancestor <-  c('23', '24','25', '26', '27', 'Arja', '28', 'Stli', 'Stlu', '29', '30', 'Dero', 'Maca', 'Leye', '31', 'Mome', '32', 'Ptpa', '33', 'Ptda', 'Ptpe', '34', '35', '36', '37', '38', 'Anpa', 'Pihe', 'Epfu', 'Idph', '39', '40', 'Laci', '41', 'Labl', 'Laxa', '42', 'Myvo', 'Myyu', '43', 'Tabr', 'Nyfe', 'Bapl' ) %>% factor
+
+ancestral_recon <- ancestral_map %>% 
+  multiply_by_matrix(
+    pca %>% 
+      use_series(rotation) %>% 
+      extract(,1:15) %>% 
+      apply(1, multiply_by, pca %>% use_series(sdev) %>% extract(1:15))
+  ) %>% 
+  as_tibble() %>% 
+  cbind(ancestor, .) %>% 
+  group_by(ancestor) %>% 
+  nest %>%
+  mutate(centred = map(data, function(x) x %>% unlist %>% array(dim = c(104,50)))) %>% 
+  select(-data) %>% 
+  ungroup %>% 
+  mutate(full = map(centred, function(x) x %>% add(pca %>% use_series(center))))
+```
+
+![000009.png]

@@ -1,0 +1,131 @@
+---
+title: "Inferring Ornstein-Uhlenbeck hyperparameters"
+author: "J.P. Meagher"
+date: "12 October 2017"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = F)
+```
+
+Now that the weights associated with each hyperparameter have been identified the hyperparameters for each of the independent phylogenetic Ornstein-Uhlenbeck processes need to be inferred.
+
+# Packages
+
+```{r packages}
+library(batwork)
+library(sdsBAT)
+library(ape)
+library(tidyverse)
+library(magrittr)
+library(RColorBrewer)
+```
+
+# Data
+
+```{r data}
+observed_frequencies <- get_spectrogram_details(
+  mexican_bat_calls %>% use_series('call') %>% extract2(1), 
+  detail = 'freq')
+
+band <- observed_frequencies > 9000 & observed_frequencies < 212000
+
+df <- mexican_bat_calls %>% 
+  mutate(time = map(calls, get_spectrogram_details, detail = 'time'), 
+    psd = map(calls, get_psd)) %>% 
+  mutate(restricted = map(psd, extract, , band)) %>% 
+  mutate(restricted = map(restricted, log10)) %>% 
+  mutate(restricted = map(restricted, multiply_by, 10)) %>% 
+  mutate(smoothed = map(restricted, waveslim::denoise.dwt.2d, J = 2)) %>% 
+  mutate(regularised = map(smoothed, grid_interpolation)) %>%
+  select(bat, species, sex, regularised)
+
+f <- seq(observed_frequencies %>% extract(band) %>% min,
+  observed_frequencies %>% extract(band) %>% max,
+  length.out = df %>% use_series('regularised') %>% extract2(1) %>% ncol)
+
+t <- seq(0, 1,
+  length.out = df %>% use_series('regularised') %>% extract2(1) %>% nrow)
+
+df <- df %>% 
+  mutate(vectorised = map(regularised, c))
+
+mean_spectrogram <- df %>%  
+  select(vectorised) %>%
+  unlist %>% 
+  matrix(nrow = 50*100, ncol = df %>% nrow) %>% 
+  rowMeans
+
+df <- df %>% 
+  mutate(centred = map(vectorised, subtract, mean_spectrogram))
+
+components <- df %>% 
+  select(regularised) %>%
+  unnest %>% 
+  use_series('regularised') %>% 
+  array(dim = c(50*100, df %>% nrow)) %>% 
+  t %>% 
+  prcomp %>% 
+  use_series(rotation)
+component_weights <- function(centred_spectrogram, evolutionary_components){
+  weights <- lm(centred_spectrogram ~ evolutionary_components) %>% use_series(coefficients)
+  return(weights)
+}
+
+df <- df %>% 
+  mutate(weights = map(centred, component_weights, evolutionary_components = components[, 1:6]))
+
+wt <- df %>% 
+  select(bat, sex, species, weights) %>% 
+  mutate(weights = map(weights, matrix, nrow = 1)) %>% 
+  mutate(weights = map(weights, as.tibble)) %>% 
+  unnest
+```
+
+Having obtained the weight of each component associated with each spectrogram a resampling scheme can be used to infer the most likely hyperparameter values.
+
+For this I am going to try to use all the available samples. This means constructing a new phylogenetic tree with the appropriate number of tips.
+
+```{r}
+n_samples <- df %>% group_by(species) %>% summarise(n_recordings = species %>% length)
+
+tree <- phylogeny
+expanded_tree <- phylogeny
+i <- tree %>% use_series(tip.label) %>% extract(1)
+
+for(i in tree %>% use_series(tip.label)){
+  ref <- n_samples %>% filter(species == i)
+  
+  individuals <- stree(ref %>% use_series(n_recordings))
+  individuals$edge.length <- rep(0, ref %>% use_series(n_recordings))
+  individuals$tip.label <- rep(i, ref %>% use_series(n_recordings))
+  
+  expanded_tree <- bind.tree(expanded_tree, individuals, which(expanded_tree$tip.label == i))
+}
+```
+
+Given the full pylogenetic tree for the sample the observations of weight can be passed to a type 2 maximum likelihood estimator for the kernel hyperparameters.
+
+```{r}
+expanded_tree %>% use_series(tip.label) %>% length
+
+hyper <- matrix(nrow = 4, ncol = 6)
+j <- 1
+for(i in 5:10){
+  comp <- wt %>% extract(,i)
+  names(comp) <- wt %>% use_series(species)
+  comp <- comp[expanded_tree %>% use_series(tip.label)]
+  
+  h <- sdsBAT:::pou_type2mle(comp, expanded_tree, pou_logl_fast, upper_initialisation = c(10,100,10))
+  hyper[,j] <- h
+  j <-  j+1
+}
+
+rownames(hyper) <- c('s_p', 'l', 's_n', 'lik')
+hyper
+```
+
+It seems that the phylogenetic variance is very high, and the length scales seem to be a little shorter than ideal.
+
+But we are getting some reasonably interesting results.

@@ -1,0 +1,107 @@
+---
+title: "Reconstruction from Components"
+author: "J.P. Meagher"
+date: "31 October 2017"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE)
+```
+
+It has been shown that the separability of spectrograms over time and frequency is not appropriate in this application and so I will proceed by investigating the accuracy of reconstructed species mean spectrograms from the components identified.
+
+# Packages
+
+```{r}
+library(tidyverse)
+library(magrittr)
+library(sdsBAT)
+```
+
+# Data
+
+```{r}
+orig_df <- readRDS('preprocessed_calls.RDS')
+
+df <- orig_df %>% 
+  select(bat, species, full) %>% 
+  mutate(flat = map(full, c))
+
+by_species <- readRDS('by_species.RDS') %>% 
+  select(species, full) %>% 
+  mutate(flat = map(full, c)) 
+  
+```
+
+# PCA
+
+Run a Principal Components Analysis (PCA) on the sample of call spectrograms.
+
+This requires pulling the spectrograms out of the dataframe in which they are stored, flattening them into vectors of length $104 \times 50$, concatenating these vectors into a single matrix such that the rows of this matrix represent different calls and then performing a standard PCA.
+
+These Principal Components provide the basis from which Independent Components will be constructed. 
+
+```{r}
+pca <- df %>% 
+  select(full) %>% 
+  unnest %>% 
+  use_series(full) %>% 
+  array(dim = c(50*104, df %>% nrow)) %>% 
+  t %>% 
+  prcomp
+```
+
+# Linear Model of Independent Components
+
+The first analysis performed will simply fit 7 independent components to the species mean echolocation calls and explore the accuracy of these reconstructions. 
+
+## ICA
+
+```{r}
+n <- 7
+ica <- cubica34(pca %>% use_series(rotation) %>% extract(, 1:n) %>% t)
+component <- ica %>% use_series(y) %>% t
+
+component <- component %>% divide_by(component %>% t %>% multiply_by_matrix(component) %>% diag %>% extract(1) %>% sqrt)
+```
+
+## Centre Mean Spectrograms
+
+```{r}
+by_species <- by_species %>% 
+  mutate(centred = map(flat, subtract, pca %>% use_series(center)))
+```
+
+## Fit Linear Model
+
+```{r}
+ica_linear_model <- function(response){
+  lm(response ~ component)
+}
+
+by_species <- by_species %>% 
+  mutate(model = map(centred, ica_linear_model))
+
+mod <- by_species %>% 
+  select(species, model)
+
+# struggles with 5, 7, 15, 19, 20, 21
+n <- 22
+
+mod %>% 
+  filter(species == species %>% extract(n)) %>% 
+  use_series(model) %>% 
+  flatten %>% 
+  extract2('fitted.values') %>% 
+  matrix(nrow = 104, ncol = 50) %>% 
+  image
+
+by_species %>% 
+  filter(species == species %>% extract(n)) %>% 
+  use_series(centred) %>% 
+  extract2(1) %>% 
+  matrix(nrow = 104, ncol = 50) %>% 
+  image
+```
+

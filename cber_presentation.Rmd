@@ -1,0 +1,696 @@
+---
+title: "CBER Presentation"
+author: "J.P. Meagher"
+date: "6 November 2017"
+output: pdf_document
+bibliography: bibliography.bib
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, message = F)
+```
+
+The following is an outline of my work towards the ancestral reconstruction of bat echolocation calls, modelling this phenomenon by phylogenetic Gaussian processes.
+
+This outline is to be presented to Kate Jones' lab group at the Centre for Biodiversity and Environment Research, UCL on Monday November 6th.
+
+# Packages
+
+Packages used in this analysis are as follows:
+
+```{r packages, echo = T}
+library(signal) # Produce Spectrogram
+library(tidyverse) # see http://r4ds.had.co.nz/
+library(magrittr) # pipe operator and alaises
+library(batwork) # my own package, long form call data
+library(sdsBAT) # my own package, tree data and functions for ancestral reconstruction
+library(ape) # Analyses of Phylogenetics and Evolution
+library(RColorBrewer) # for pretty pictures
+library(ggridges) # Joy plots
+library(ggtree) ## ggplot for phylogenetic trees
+```
+
+# Raw Data
+
+Two datasets provide the basis on which this analysis is performed, the first being post processed echolocation call data accompanying @stathopoulos2017bat. Live bats were caught, identified, and recorded at a sampling frequency of 500 kHz. 
+In total the dataset consists of 22 species from five families, 449 individual bats and 1816 individual echolocation call recordings.
+
+This data was placed in a tidy dataset (long form) where each call recording was considered to be an observation.
+
+```{r raw calls, echo = F}
+readRDS('preprocessed_calls.RDS') %>% 
+  select(-thresholded, -full) %>% 
+  str(list.len = 5)
+```
+
+The bat super-tree in @collen2012evolution provided the phylogenetic tree of the recorded bat species.
+
+```{r tree, echo = F, fig.cap = "The phylogenetic tree describing the evolutionary relationships between bat species within the sample."}
+sdsBAT::phylogeny %>% plot.phylo()
+axisPhylo()
+title(xlab = 'Evolutionary Time (millions of years)', main = 'Phylogenetic Tree for bats in Sample')
+```
+
+# Preprocessed Data
+
+Echolocation call recordings must be preprocessed before further analysis. A standard, informative technique for the analysis of acoustic signals is to obtain a time-frequency representation, the spectrogram. The spectrogram is calculated by a Short Time Fourier transform of the signal with overlapping windows. Spectrograms were calculated by fourier transforms of size 512, with a Hamming window of size 256, and `r 248*100/256`% overlap.
+
+The range of frequencies used by bats for their echolocation calls is [9, 212] kHz, and so spectrograms can safely be restricted to this range for analysis [@stathopoulos2017bat]. 
+
+This analysis then considers the spectrograms produced to be functional data objects, in this case surfaces. This involves smoothing the surfaces and then mapping them all on to an absolute time scale by a combination of dynamic time warping and parwise synchronisation. This stage of the analysis was performed in Matlab due to the availability of effective algorithms on this platform. Smoothing was done using a weighted robust spline smoothing algorithm for 1-D to N-D data [@garcia2010robust] [@garcia2011fast], where weighting was used to preserve detail at spectrogram peaks. Dynamic time warping [@damoulas2010bayesian] was used adapt pairwise curve synchronisation [@tang2008pairwise] to the spectrograms. 
+
+The preprocessed data was then ported into R and added as a column to the raw call dataset.
+
+```{r prepreocessed data, echo = F}
+df <- readRDS('preprocessed_calls.RDS') %>% 
+  select(-thresholded)
+
+
+# df %>% str(list.len = 5, vec.len = 2)
+```
+
+```{r preprocessing visualised, echo = F, fig.height = 3, fig.cap = "Plotted above is the call waveform, the raw spectrogram, and the preprocessed spectrogram surface for a randomly selected observation in the dataset."}
+## Species Identifiers
+# df %>% use_series(species) %>% levels
+
+temp <- df %>%
+#  filter(species == 'Mome') %>% 
+  sample_n(1)
+
+temp_call <- temp %>% use_series(calls) %>% unlist
+
+#x11()
+par(mfrow = c(1,3))
+plot(seq(from = 0, by = 1/500, length.out = temp_call %>% length), 
+  temp_call, type = 'l',
+  xlab = 'Time (ms)', ylab = '',
+  main = paste('Call recording of', temp %>% use_series(species), 'bat' ),
+  col = 'gray30')
+
+temp_s <- specgram(temp_call, n = 512, Fs = 500000, window = hamming(256), overlap = 248)
+
+temp_s %>% use_series(S) %>% 
+  abs %>% raise_to_power(2) %>% log10 %>% multiply_by(10) %>% 
+  t %>% 
+  image(temp_s %>% use_series(t) %>% multiply_by(1000), 
+    temp_s %>% use_series(f) %>% divide_by(1000), .,
+    col = brewer.pal(9, 'Spectral'),
+    xlab = 'Time (ms)', ylab = 'Frequency (kHz)',
+    main = 'Spectrogram')
+
+t <- seq(from = 0, to = 1, length.out = 100) %>% 
+  extract(c(F, T))
+
+f <- seq(from = 0, to = 250, length.out = 257)
+restricted_f <- f %>% 
+  extract(f > 9 & f < 212) %>% 
+  extract(c(F, T))
+
+temp %>% use_series(full) %>% extract2(1) %>% t %>% 
+  image(t, restricted_f, .,
+    col = brewer.pal(9, 'Spectral'),
+    xlab = 'Time (ms)', ylab = 'Frequency (kHz)',
+    main = 'Preprocessed Spectrogram ')
+par(mfrow = c(1,1))
+
+remove(temp, temp_call, temp_s)
+```
+
+# Mean Spectrogram
+
+The preprocessed spectrograms, or spectrogram surfaces, have been reported on a regular $104 \times 50$ grid. This makes the calculation of summary statistics relatively straightforward.
+
+An important statistic is the mean spectrogram for each species. In order to estimate an unbiased mean, the mean spectrogram for each bat will be estimated first. The species mean spectrogram will be estimated from these individual bat mean spectrograms.
+
+```{r mean spectrograms}
+sp <- sdsBAT::phylogeny$tip.label
+
+df <- readRDS('preprocessed_calls.RDS') %>% 
+  select(bat, species, family, full) %>% 
+  mutate(species = factor(species, levels = sp))
+
+temp <- df %>% 
+  group_by(bat, family) %>% 
+  summarise(species = unique(species))
+
+bat <- temp %>% use_series(bat)
+species <- temp %>% use_series(species)
+family <- temp %>% use_series(family)
+
+by_bat <- df %>% 
+  use_series(full) %>% 
+  unlist %>% 
+  array(dim = c(104*50, df %>% nrow)) %>%
+  apply(1, function(x) tapply(x, df %>% use_series(bat), mean)) %>% 
+  as_tibble() %>% 
+  mutate(bat = bat, species = species, family = family) %>% 
+  select(bat, species, family, starts_with('V')) %>% 
+  group_by(bat, family, species) %>% 
+  nest %>% 
+  mutate(full = map(data, function(x) x %>% unlist %>% array(dim = c(104,50)))) %>% 
+  select(-data) %>% 
+  ungroup
+
+temp <- by_bat %>% 
+  group_by(species) %>% 
+  summarise(family = unique(family))
+
+species <- temp %>% use_series(species)
+family <- temp %>% use_series(family)
+
+
+by_species <- by_bat %>% 
+  use_series(full) %>% 
+  unlist %>% 
+  array(dim = c(104*50, by_bat %>% nrow)) %>%
+  apply(1, function(x) tapply(x, by_bat %>% use_series(species), mean)) %>% 
+  as_tibble() %>% 
+  mutate(species = species, family = family) %>% 
+  select(species, family, starts_with('V')) %>% 
+  group_by(family, species) %>% 
+  nest %>% 
+  mutate(full = map(data, function(x) x %>% unlist %>% array(dim = c(104,50)))) %>% 
+  select(-data) %>% 
+  ungroup
+
+rm(bat, family, species, temp)
+```
+
+```{r mean figures, fig.height = 4, fig.cap = "Plotted above the mean spectrogram for a randomly selected individual bat and a randomly selected species of bat. These plots serve as a sense check on the data." }
+par(mfrow = c(1,2))
+b <- sample.int(by_bat %>% nrow, 1)
+by_bat %>% 
+  filter(bat == b) %>% 
+  use_series(full) %>% extract2(1) %>% t %>% 
+  image(t, restricted_f, .,
+    col = brewer.pal(9, 'Spectral'),
+    xlab = 'Time (ms)', ylab = 'Frequency (kHz)',
+    main = paste('Mean Spectrogram for bat', b))
+
+sp <- by_bat %>% use_series(species) %>% extract(b)
+by_species %>% 
+  filter(species == sp) %>% 
+  use_series(full) %>% extract2(1) %>% t %>% 
+  image(t, restricted_f, .,
+    col = brewer.pal(9, 'Spectral'),
+    xlab = 'Time (ms)', ylab = 'Frequency (kHz)',
+    main = paste(sp, 'Mean Spectrogram'))
+par(mfrow = c(1,1))
+rm(b)
+```
+
+# Evolutionary Features
+
+By making some assumptions about the nature of the data, namely that the call spectrograms and evolutionary process driving them can be considered Gaussian processes, spectrogram features, the weights of which evolved independently can be identified. This can be done by a principal components analysis of the call spectrogram data. 
+
+The data was tested to investigate whether or not it could be modelled as being separable in time and frequency. This assumption was found to be inappropriate and so a PCA was performed on the full, flattened, preprocessed spectrograms.
+
+```{r pca}
+pca <- df %>% 
+  use_series(full) %>%
+  unlist %>% 
+  array(dim = c(50*104, df %>% nrow)) %>% 
+  extract(, sample.int(df %>% nrow)) %>% 
+  t %>% 
+  prcomp
+```
+
+## PCA Scores
+
+See Figure 4.
+
+```{r scores, fig.cap = "The scores associated with each component provide insight into the proportion of the sample variance captured by the corresponding principal component. The scores above suggest that the dataset of echolocation call spectrograms is a very high dimensional, requiring 3 principal components to capture even 50% of the sample variance. It can be shown that 8 components capture more than 2.5% of the variation, and 15 capture more than 1% of the variation. 13 components are required to explain 75% of the variance, while 51 are required to explain 90%"}
+s_var <- pca %>% use_series(sdev) %>% raise_to_power(2) %>% sum
+
+# pca %>% use_series(sdev) %>% raise_to_power(2) %>% 
+#  divide_by(s_var) %>% cumsum %>% is_less_than(0.95) %>% sum
+
+pca %>% use_series(sdev) %>% raise_to_power(2) %>% 
+  extract(1:10) %>% divide_by(s_var) %>% cumsum %>% 
+  plot(xlab = 'Component', ylab = 'Proportion', main = 'Variance Explained',
+    pch = 19, col = 2, ylim = c(0, 1))
+pca %>% use_series(sdev) %>% raise_to_power(2) %>% 
+  extract(1:10) %>% divide_by(s_var) %>% cumsum %>% 
+  lines(col = 2)
+pca %>% use_series(sdev) %>% raise_to_power(2) %>% 
+  extract(1:10) %>% divide_by(s_var) %>% 
+  points(col = 3, pch = 19)
+pca %>% use_series(sdev) %>% raise_to_power(2) %>% 
+  extract(1:10) %>% divide_by(s_var) %>% 
+  lines(col = 3)
+
+legend('topleft', legend = c('Cumulative Sum', 'Per Component'), pch = 19, col = c(2,3))
+rm(s_var)
+```
+
+## PCA Loadings
+
+These loadings provide the components by which we model echolocation as having evolved. 
+
+A visual inspection of these components allows them to be interpreted to some degree especially when examined in terms of its impact on the global mean spectrogram.
+
+The model for evolution implies that there exists a global mean spectrogram for all bat species, see Figure 5. By by adding a weighted component to this surface some intuition on the impact of the component can be obtained. 
+
+```{r global, fig.cap = "The global mean echlocation call spectrogram implied by the model. I believe that this will prove to be the 'best guess' at the ancestral bat lying a the root node of the phylogenetic tree."}
+pca %>% 
+  use_series(center) %>% 
+  array(dim = c(104, 50)) %>% 
+  t %>% 
+  image(t, restricted_f, .,
+    col = brewer.pal(9, 'Spectral'),
+    xlab = 'Time (ms)', ylab = 'Frequency (kHz)',
+    main = 'Global Mean Spectrogram for all species')
+```
+
+```{r interpret component}
+global <- pca %>% 
+  use_series(center) %>% 
+  array(dim = c(104, 50))
+
+n <- 2
+lambda <- pca %>% use_series(sdev) %>% extract(n)
+
+component <- pca %>% 
+  use_series(rotation) %>%
+  extract(, n) %>% 
+  array(dim = c(104, 50))
+```
+
+```{r interpret figure, fig.cap = "By adding or subtracting a component to the global mean spectrogram we gain insight into the effect of this component in evolutionary terms."}
+par(mfrow = c(1,2))
+component %>%
+  multiply_by(lambda) %>% 
+  add(global) %>%
+  t %>% 
+  image(t, restricted_f, .,
+    col = brewer.pal(9, 'Spectral'),
+    xlab = 'Time (ms)', ylab = 'Frequency (kHz)',
+    main = paste('Global Mean Spectrogram plus\n', lambda,'times component' ,n))
+
+component %>%
+  multiply_by(-lambda) %>% 
+  add(global) %>%
+  t %>% 
+  image(t, restricted_f, .,
+    col = brewer.pal(9, 'Spectral'),
+    xlab = 'Time (ms)', ylab = 'Frequency (kHz)',
+    main = paste('Global Mean Spectrogram minus\n', lambda,'times component' ,n))
+par(mfrow = c(1,1))
+```
+
+```{r animate, eval = F}
+#dir.create("animation")
+setwd("animation")
+
+lambda <- seq(from = -200, 
+  to  = 200, 
+  length.out = 101)
+
+for(i in seq_along(lambda)){
+  png(file=paste('example', sprintf("%03d", i), '.png', sep = ''), width=800, height=600)
+  component %>%
+    multiply_by(lambda[i]) %>% 
+    add(global) %>% 
+    t %>%
+    image(t, restricted_f, ., 
+      col = brewer.pal(9, 'Spectral'), 
+      xlab = 'Time (ms)', ylab = 'Frequency (kHz)', 
+      main = paste('Global Mean Spectrogram plus\n', lambda[i],'times component' ,n))
+  dev.off()
+}
+
+system('"C:/Program Files/ImageMagick-7.0.7-Q16/magick.exe" *.png -delay 50 example.gif')
+file.remove(list.files(pattern=".png"))
+```
+
+## Component Scores for each Bat
+
+These components can be used to find scores for every echolocation call. In this case I will consider the mean call of each individual bat as an observation and find the associated scores for the first 15 principal components.
+
+These scores can then by explored through various plots.
+
+```{r indivudual bat scores}
+scores <- by_bat %>% 
+  select(bat, species, family) %>% 
+  cbind(pca %>% 
+    use_series(rotation) %>% 
+    extract(, 1:15) %>% 
+    t %>% 
+    multiply_by_matrix( by_bat %>%
+        select(full) %>%
+        unlist %>% 
+        array(dim = c(104*50, by_bat %>% nrow))
+    ) %>% 
+    t %>% 
+    as_tibble()
+  )
+```
+
+
+```{r pc distribution, fig.cap = "Distribution of component scores for a selected Principal component loading."}
+scores %>% 
+  mutate(score = scale(PC1)) %>% 
+  select(bat, species, family, score) %>% 
+  ggplot() +
+  geom_histogram(aes(x = score)) + 
+  labs(
+    title = 'Histogram of Selected Principal Component Scores',
+    y = 'Count'
+  )
+```
+
+```{r, fig.cap = "Distribution of component scores for a selected Principal component loading, separated out by species."}
+scores %>% 
+  mutate(score = scale(PC5)) %>% 
+  select(bat, species, family, score) %>% 
+  ggplot() +
+  geom_density_ridges(aes(x = score, y = species, color = family, fill = family)) +
+  scale_colour_brewer(palette = "Dark2") +
+  scale_fill_brewer(palette = "Dark2") +
+  labs(
+    title = 'Joyplot of selected Principal Component Scores',
+    y = 'Species'
+  )
+```
+
+Visual inspections of the score distributions do not seem to indicate particularly strong phylogenetic relationships within the Principal Component Scores of each individual bats mean spectrogram.
+
+## Bootstrapped mean estimates
+
+When performing this analysis for spectral density curves, bootstrapped estimates of the mean species call were required. This approach will be attempted here also.
+
+```{r bootstrapped sample}
+temp <- df %>% 
+  group_by(bat) %>% 
+  sample_n(1) %>% 
+  ungroup %>% 
+  group_by(species) %>% 
+  sample_n(4) %>% 
+  ungroup
+
+boot_mean <- df %>% 
+  group_by(species) %>% 
+  summarise(family = unique(family)) %>% 
+  ungroup %>% 
+  cbind(
+    check <- temp %>%
+      use_series(full) %>% 
+      unlist %>% 
+      array(dim = c(104*50, temp %>% nrow)) %>% 
+      apply(1, function(x) tapply(x, temp %>% use_series(species), mean))
+  ) %>% 
+  group_by(species, family) %>% 
+  nest %>%
+  mutate(full = map(data, function(x) x %>% unlist %>% array(dim = c(104,50)))) %>% 
+  select(-data) %>% 
+  ungroup
+
+for(i in 1:24){
+  temp <- df %>% 
+    group_by(bat) %>% 
+    sample_n(1) %>% 
+    ungroup %>% 
+    group_by(species) %>% 
+    sample_n(4) %>% 
+    ungroup
+  
+  temp_mean <- df %>% 
+  group_by(species) %>% 
+  summarise(family = unique(family)) %>% 
+  ungroup %>% 
+  cbind(
+    check <- temp %>%
+      use_series(full) %>% 
+      unlist %>% 
+      array(dim = c(104*50, temp %>% nrow)) %>% 
+      apply(1, function(x) tapply(x, temp %>% use_series(species), mean))
+  ) %>% 
+  group_by(species, family) %>% 
+  nest %>%
+  mutate(full = map(data, function(x) x %>% unlist %>% array(dim = c(104,50)))) %>% 
+  select(-data) %>% 
+  ungroup
+  
+  boot_mean <- rbind(boot_mean, temp_mean)
+  remove(temp, temp_mean)
+}
+
+boot_mean <- boot_mean %>% 
+  arrange(species)
+```
+
+```{r bootstrapped scores}
+boot_scores <- boot_mean %>% 
+  select(species, family) %>% 
+  cbind(pca %>% 
+    use_series(rotation) %>% 
+    extract(, 1:15) %>% 
+    t %>% 
+    multiply_by_matrix( boot_mean %>%
+        select(full) %>%
+        unlist %>% 
+        array(dim = c(104*50, boot_mean %>% nrow))
+    ) %>% 
+    t %>% 
+    as_tibble()
+  )
+```
+
+```{r boot joyplot scores, fig.cap = "Distribution of bootstrapped component scores for a selected Principal component loading, separated out by species."}
+boot_scores %>% 
+  mutate(score = scale(PC5)) %>% 
+  select(species, family, score) %>% 
+  ggplot() +
+  geom_density_ridges(aes(x = score, y = species, color = family, fill = family)) +
+  scale_colour_brewer(palette = "Dark2") +
+  scale_fill_brewer(palette = "Dark2") +
+  labs(
+    title = 'Joyplot of selected Principal Component Scores',
+    y = 'Species'
+  )
+```
+
+## Independent Components
+
+Another set of evolutionary features can be estimated by an Independent Components Analysis of the data, this may provide more interpretable features with clearer phylogenetic relationships.
+
+```{r ica}
+n <- 5
+ica <- cubica34(pca %>% use_series(rotation) %>% extract(, 1:n) %>% t)
+
+component <- ica %>% use_series(y) %>% t
+
+component <- component %>% divide_by(component %>% t %>% multiply_by_matrix(component) %>% diag %>% extract(1) %>% sqrt)
+
+boot_scores <- boot_mean %>% 
+  select(species, family) %>% 
+  cbind(component %>% 
+    t %>% 
+    multiply_by_matrix( boot_mean %>%
+        select(full) %>%
+        unlist %>% 
+        array(dim = c(104*50, boot_mean %>% nrow))
+    ) %>% 
+    t %>% 
+    as_tibble()
+  )
+```
+
+```{r boot joyplot ica scores, fig.cap = "Distribution of bootstrapped component scores for a selected Independent component loading, separated out by species."}
+boot_scores %>% 
+  mutate(score = scale(V5)) %>% 
+  select(species, family, score) %>% 
+  ggplot() +
+  geom_density_ridges(aes(x = score, y = species, color = family, fill = family)) +
+  scale_colour_brewer(palette = "Dark2") +
+  scale_fill_brewer(palette = "Dark2") +
+  labs(
+    title = 'Joyplot of selected Independent Component Scores',
+    y = 'Species'
+  )
+```
+
+# Evolutionary Inference
+
+Ancestral reconstruction can be performed by finding the posterior predictive distribution of the Phylogenetic Gaussian Process. In order to do this we must first identify appropriate hyperparameters for the PGP. This can be performed by type II maximum likelihood estimation of the hyperparameters. This can be obtained by optimisation, or with a MCMC chain, however in this case it may be more informative to simply do a grid search over the space of the hyperparameters. This will allow a better understanding of the hyperparameter space rather than simply reporting some values that produce a local optimum.
+
+The testing of this approach will be performed on the set of scores associated with the species mean spectrograms. While this is probably too few datapoints to really get a feel for the most likely hyperparameters, testing on only 22 data points will be far less time consuming.
+
+```{r by species scores}
+remove(boot_mean, boot_scores, boot_tree, component, ica, scores, check, i, lambda, n, sp)
+
+scores <- by_species %>% 
+  select(species, family) %>% 
+  cbind(pca %>% 
+    use_series(rotation) %>% 
+    extract(, 1:15) %>% 
+    t %>% 
+    multiply_by_matrix( by_species %>%
+        select(full) %>%
+        unlist %>% 
+        array(dim = c(104*50, by_species %>% nrow))
+    ) %>% 
+    t %>% 
+    as_tibble()
+  )
+```
+
+```{r plot by species scores, eval = F}
+scores %>% 
+  mutate(score = PC5) %>% 
+  select(species, family, score) %>% 
+  ggplot() +
+  geom_point(aes(x = score, y = species, col = family)) + 
+  labs(
+    title = 'Selected Principal Component Scores'
+  )
+```
+
+```{r second animate, eval = F}
+#dir.create("animation")
+setwd("animation")
+
+n <- 5
+
+lambda <- seq(from = -500, 
+  to  = 0, 
+  length.out = 101)
+
+component <- pca %>% 
+  use_series(rotation) %>%
+  extract(, n) %>% 
+  array(dim = c(104, 50))
+
+for(i in seq_along(lambda)){
+  png(file=paste('example', sprintf("%03d", i), '.png', sep = ''), width=800, height=600)
+  component %>%
+    multiply_by(lambda[i]) %>% 
+    add(global) %>% 
+    t %>%
+    image(t, restricted_f, ., 
+      col = brewer.pal(9, 'Spectral'), 
+      xlab = 'Time (ms)', ylab = 'Frequency (kHz)', 
+      main = paste('Global Mean Spectrogram plus\n', lambda[i],'times component' ,n))
+  dev.off()
+}
+
+system('"C:/Program Files/ImageMagick-7.0.7-Q16/magick.exe" *.png -delay 50 pc5.gif')
+file.remove(list.files(pattern=".png"))
+```
+
+```{r type II mle}
+sdsBAT:::pou_type2mle(scores %>% use_series(PC1) %>% scale, phylogeny, logl_function = pou_logl_fast,
+  optim_function = "optim", optim_method = "Nelder-Mead",
+  lower_initialisation = c(0, 0, 0), upper_initialisation = c(1, 1, 1),
+  n_restarts = 10)
+```
+
+```{r posterior distribution}
+posterior_likelihood <- function(s_p, l, s_n, ...){
+  x <- s_p %>% rep(times = length(l)*length(s_n))
+  y <- l %>% rep(each = length(s_p)) %>% rep(times = length(s_n))
+  z <- s_n %>% rep(each = length(s_p)*length(l))
+  
+  eval <- mapply(function(x, y, z){ -pou_logl_fast(log(c(x, y, z)), ...)}, 
+    x, y, z) %>% 
+    array(dim = c(length(s_p), length(l), length(s_n)))
+  
+  return(eval)
+}
+
+s_p <- seq(0.75, 0.95, length.out = 31)
+l <- seq(50, 90, length.out = 31)
+s_n <- seq(0.425, 0.525, length.out = 11)
+
+check <- posterior_likelihood(s_p, l, s_n, phylogeny, scores %>% use_series(PC1) %>% scale)
+
+check %>% apply(c(1, 2), mean) %>% 
+  image(s_p, l, .,
+    col = brewer.pal(9, 'Spectral'))
+```
+
+```{r}
+mle <- c(0.8459664, 63.2062671,  0.4710946, 27.6356489)
+snr <- mle[1]^2 / mle[3]^2
+c <- mle[1]^2 + mle[3]^2
+l <- mle[2]
+-pou_logl_fast(log(c(s_p, l, s_n)), phylogeny, scores %>% use_series(PC1) %>% scale)
+
+reparamaterised_likelihood(snr, mle[2], c, phylogeny, scores %>% use_series(PC1) %>% scale)
+```
+
+```{r reparameterisation}
+reparamaterised_likelihood <- function(snr, l, c, ...){
+  s_p <- snr %>% multiply_by(c) %>% 
+    divide_by((1 + snr)) %>% 
+    sqrt
+  s_n <- c %>% 
+    divide_by((1 + snr)) %>% 
+    sqrt
+  
+  -pou_logl_fast(log(c(s_p, l, s_n)), ...)
+}
+
+reparameterised_posterior_likelihood <- function(snr, l, c, ...){
+  x <- snr %>% rep(times = length(l)*length(c))
+  y <- l %>% rep(each = length(snr)) %>% rep(times = length(c))
+  z <- c %>% rep(each = length(snr)*length(l))
+  
+  eval <- mapply(function(x, y, z){ reparamaterised_likelihood(x, y, z, ...)}, 
+    x, y, z) %>% 
+    array(dim = c(length(s_p), length(l), length(s_n)))
+  
+  return(eval)
+}
+
+snr <- seq(3, 3.5, length.out = 31)
+l <- seq(60, 65, length.out = 21)
+c <- seq(0.9, 0.95, length.out = 31)
+
+check <- posterior_likelihood(snr, l, c, phylogeny, scores %>% use_series(PC1) %>% scale)
+
+check %>% extract(,,3) %>% 
+  image(snr, l, .,
+    col = brewer.pal(9, 'Spectral'))
+```
+
+
+```{r, eval = F}
+n_samples <- 25
+boot_tree <- phylogeny
+
+for(i in phylogeny %>% use_series(tip.label)){
+  individuals <- stree(n_samples)
+  individuals$edge.length <- rep(0, n_samples)
+  individuals$tip.label <- rep(i, n_samples)
+  
+  boot_tree <- bind.tree(boot_tree, individuals, which(boot_tree$tip.label == i))
+}
+
+boot_tree %>% use_series(tip.label) %>% equals(
+  boot_mean %>% use_series(species)
+) %>% all
+pou_logl_fast(log(c(0.5, 20, 0.5)), boot_tree, boot_scores %>% use_series(V1) %>% scale())
+
+s_p <- seq(0.1, 2, length.out = 101) %>% rep(times = 101*101)
+l <- seq(0.1, 70, length.out = 101) %>% rep(each = 101) %>% rep(times = 101)
+s_n <- seq(0.1, 2, length.out = 101) %>% rep(each = 101*101)
+
+check <- mapply(function(x, y, z){
+  -pou_logl_fast(log(c(x, y, z)), boot_tree, boot_scores %>% use_series(V1) %>% scale())
+}, s_p, l, s_n)
+check %>% dim
+```
+
+
+```{r}
+lik_array <- check %>% array(dim = c(101, 101, 101))
+
+lik_array %>% 
+  apply(c(1,2), mean) %>% 
+  image
+
+pou_logl_slow
+pou_covariance
+```
+
+# References

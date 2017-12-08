@@ -1,0 +1,94 @@
+---
+title: "Phylogenetic Gaussian Processes as a Multi Output GP"
+author: "J.P. Meagher"
+date: "4 December 2017"
+output: html_document
+bibliography: bibliography.bib
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+The Ornstein-Uhlenbeck class of models for Ancestral Reconstruction can be framed as a Gaussian Process. 
+
+A Gaussian process places a prior distribution over functions, \(f(\mathbf{x}) \sim \mathcal{GP}(m(\mathbf{x}), k (\mathbf{x}, \mathbf{x}', \theta))\), where \(\mathbf{x} \in \mathbf{R}^P\) is some input variable, the mean function \(m(\mathbf{x}) = \mathbf{E}[f(\mathbf{x})]\), and the covariance function \(k(\mathbf{x}, \mathbf{x}', \theta) = \mathrm{cov}(f(\mathbf{x}), f(\mathbf{x}') )\). Given observations \(\mathbf{y}\) at locations \(\{\mathbf{x}_n\}_{n=1}^N\), Gaussian noise, and kernel hyperparameters \(\theta\), a posterior predictive distribution over functions can be inferred analytically for regression problems. See @rasmussen2006gaussian for an in depth treatment.
+
+In the case of continuous characteristic reconstruction observed characteristics $y$ can be modelled as realisations of a founction for which the input space is the phylogeny $\mathcal{P}$. Thus
+
+$$
+y = f(\mathbf{p}) + \epsilon_n
+$$
+
+where $\epsilon_n$ can be thought of as the non-phylogenetic noise and $f(\mathbf{p}) \sim \mathcal{GP}(m(\mathbf{p}), k(\mathbf{p}, \mathbf{p}', \boldsymbol{\theta})))$ is the phylogenetic Gaussian process where $\boldsymbol{\theta} = (\sigma_p, \ell)^{\mathsf{T}}$ are the kernel hyperparameters and 
+
+$$
+k(\mathbf{p}, \mathbf{p}', \boldsymbol{\theta}) = \sigma_p^2 \exp\left(\frac{d(\mathbf{p}, \mathbf{p}')}{\ell}\right)
+$$
+
+where $\sigma_p$ is the phylogenetic noise, $\ell$ is the characteristic length-scale, and $d(\mathbf{p}, \mathbf{p}')$ is the cophenetic distance between points $\mathbf{p}$ and $\mathbf{p}'$ on the phylogeny $\mathcal{P}$.
+
+This kernel satisfies markov properties and assumptions of the model for evolution. Is the only Gauss-Markov kernel.
+
+Thus inferring the model for evolution reduces to inferring the hyperparameters $(\sigma_p, \ell, \sigma_n)^{\mathsf{T}}$ where $\frac{\sigma_p^2}{\sigma_n^2}$ can be thought of as the phylogenetic signal to noise ratio for the characteristic and $\ell$ the persistence of the phylogenetic signal through evoluionary time.
+
+This frame work was extended to function valued traits.
+
+When the observed characteristic $\mathbf{y}$ is itself a function over some trait space $\mathcal{X}$ we have that
+
+$$
+\mathbf{y}(\mathbf{x}) = f(\mathbf{x}, \mathbf{p}) + \epsilon_n(\mathbf{x})
+$$
+
+and $f(\mathbf{x}, \mathbf{p}) \sim \mathcal{GP}(m(\mathbf{x}, \mathbf{p}), k(\mathbf{x}, \mathbf{x}', \mathbf{p}, \mathbf{p}', \boldsymbol{\theta})))$
+
+@jones2013evolutionary show that if we assume that the the phylogenetic gaussian process is separable such that  $k(\mathbf{x}, \mathbf{x}', \mathbf{p}, \mathbf{p}', \boldsymbol{\theta}) = k(\mathbf{x}, \mathbf{x}', \boldsymbol{\theta}_{\mathbf{x}})k(\mathbf{p}, \mathbf{p}', \boldsymbol{\theta}_{\mathbf{p}})$ and if $K_\mathbf{x}$ is a continuous degenerate Mercer kernel then
+
+$$
+f(\mathbf{x}, \mathbf{p}) = \mathbf{w}(\mathbf{p})^\mathsf{T} \boldsymbol{\phi}^\mathsf{T}
+$$
+
+Where $\mathbf{w}^\mathsf{T} = (w_1(\mathbf{p}), \dots, w_q(\mathbf{p}))$ where $w_i(\mathbf{p})$ is an independent, univariate Gaussian process and $\boldsymbol{\phi}^\mathsf{T} = (\phi_1(\mathbf{x}), \dots, \phi_q(\mathbf{x}))$ is a set of deterministic basis functions.
+
+Thus
+
+$$
+p(\mathbf{y} | \mathbf{x}, \mathbf{p}, \boldsymbol{\phi}, \boldsymbol{\theta}_p, \boldsymbol{\theta}_n) = p(f(\mathbf{x}, \mathbf{p}) | \boldsymbol{\phi}, \boldsymbol{\theta}_p) p(\mathbf{y} - f(\mathbf{x}, \mathbf{p})| \boldsymbol{\theta}_n)
+$$
+where
+
+$$
+p(f(\mathbf{x}, \mathbf{p}) | \boldsymbol{\phi}, \boldsymbol{\theta}_p) = \prod_{i = 1}^{Q} p(w_i(\mathbf{p}) | \boldsymbol{\phi}, \boldsymbol{\theta}_p)
+$$
+
+This likelihood can then be used for model selection alongside AIC or BIC say.
+
+Deterministic basis functions can be thought of as evolutionary features which is useful for model interpretation.
+
+# Latent GP Models
+
+**plagarised**
+
+Dataset $\mathcal{D} = \{\mathbf{x}_n, \mathbf{y}_n \}_{n = 1}^N$. Input $\mathbf{x_n}$ has D dimensions, Output $\mathbf{y}_n$ has P dimensions. Learn mapping from inputs to outputs, which can be established by Q underlying latent functions $\{f_j\}_{j = 1}^Q$.
+
+$$
+p(f_j | \boldsymbol{\theta}_j) \sim \mathcal{GP} (0, k_j(\cdot, \cdot, \boldsymbol{\theta}_j))
+$$
+
+$$
+p(\mathbf{f} | \boldsymbol{\theta}) = \prod_{j = 1}^Q p(\mathbf{f}_{\cdot j} | \boldsymbol{\theta}_j) =  \prod_{j = 1}^Q \mathcal{N}(\mathbf{f}_{\cdot j} ; \mathbf{0}, K_{\mathbf{x} \mathbf{x}}^j )
+$$
+where $\mathbf{f}$ is the set of all latent function values; $\mathbf{f}_{\cdot j} = \{ f_j(\mathbf{x}_n) \}_{n = 1}^N$ denotes the values of the $j^{th}$ latent function, $K_{\mathbf{x} \mathbf{x}}^j$ is the covariance function given by $k_j(\cdot, \cdot, \boldsymbol{\theta}_j)$ at each pair of inputs.
+
+Finally, assume that the multidimensional observations $\{\mathbf{y}_n\}$ are iid given the the set of latent functions, hyperparameters, and inputs such that
+
+$$
+p(\mathbf{y} | \mathbf{f}, \boldsymbol{\phi}) = \prod_{n = 1}^N p(\mathbf{y}_n | \mathbf{x}_n, \mathbf{f}, \boldsymbol{\phi})
+$$
+
+where $\boldsymbol{\phi}$ are the conditional likelihood parameters.
+
+**plagarised**
+
+---
+# References

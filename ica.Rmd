@@ -1,0 +1,106 @@
+---
+title: "Independent Components Analysis"
+author: "J.P. Meagher"
+date: "13 October 2017"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, message = F)
+```
+
+Evolutionary Components have been approximated by Principal components. In this analysis I will instead find independent components wich may provide more satisfying components.
+
+# Packages
+
+```{r packages}
+library(batwork)
+library(signal)
+library(sdsBAT)
+library(ape)
+library(tidyverse)
+library(magrittr)
+library(RColorBrewer)
+```
+
+# Data
+
+```{r data}
+observed_frequencies <- get_spectrogram_details(
+  mexican_bat_calls %>% use_series('call') %>% extract2(1), 
+  detail = 'freq')
+
+band <- observed_frequencies > 9000 & observed_frequencies < 212000
+
+df <- mexican_bat_calls %>% 
+  mutate(time = map(calls, get_spectrogram_details, detail = 'time'), 
+    psd = map(calls, get_psd)) %>% 
+  mutate(restricted = map(psd, extract, , band)) %>% 
+  mutate(restricted = map(restricted, log10)) %>% 
+  mutate(restricted = map(restricted, multiply_by, 10)) %>% 
+  mutate(smoothed = map(restricted, waveslim::denoise.dwt.2d, J = 2)) %>% 
+  mutate(regularised = map(smoothed, grid_interpolation)) %>%
+  select(bat, species, sex, regularised)
+
+f <- seq(observed_frequencies %>% extract(band) %>% min,
+  observed_frequencies %>% extract(band) %>% max,
+  length.out = df %>% use_series('regularised') %>% extract2(1) %>% ncol)
+
+t <- seq(0, 1,
+  length.out = df %>% use_series('regularised') %>% extract2(1) %>% nrow)
+
+components <- df %>% 
+  select(regularised) %>%
+  unnest %>% 
+  use_series('regularised') %>% 
+  array(dim = c(50*100, df %>% nrow)) %>% 
+  t %>% 
+  prcomp %>% 
+  use_series(rotation)
+```
+
+# Orthogonal Components
+
+First check that the principal components are indeed orthoghonal.
+
+```{r}
+orth <- (t(components) %*% components)
+
+orth %>% image
+```
+
+Principal components ar indeed orthogonal.
+
+These orthogonal. This will be done by cubica algorithm.
+
+```{r}
+ica <- cubica34(components %>% extract(, 1:6) %>% t)
+
+(ica %>% use_series(y)) %*% (t(ica %>% use_series(y)))
+```
+
+# Visual Inspection
+
+Components in this case will need to be sense checked visually.
+
+```{r}
+n <- 1
+while(n <= 6){
+  components %>% 
+  extract(,n) %>% 
+  matrix(nrow = 50, ncol = 100) %>% 
+  image(t, f/1000, .,  main = paste('Principal Component', n), 
+  xlab = 'Time', ylab = 'Frequency (kHz)',
+  col = brewer.pal(9, 'Spectral'))
+
+ica %>% 
+  use_series(y)%>% 
+  extract(n,) %>% 
+  matrix(nrow = 50, ncol = 100) %>% 
+  image(t, f/1000, .,  main = paste('Independent Component', n), 
+  xlab = 'Time', ylab = 'Frequency (kHz)',
+  col = brewer.pal(9, 'Spectral'))
+n <- n + 1
+}
+```
+

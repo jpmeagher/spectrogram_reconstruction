@@ -1,0 +1,92 @@
+---
+title: "Updated Tree"
+author: "J.P. Meagher"
+date: "1 December 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+The Phylogenteic Tree was retranscribed and some minor problems fixed.
+
+```{r}
+library(ape)
+phy_tips <- "((Arja, (Stli, Stlu)), (Dero, Maca), Leye);"
+phy_tree <- read.tree(text = phy_tips)
+
+ves_tips <- "((Anpa, Pihe), Epfu, Idph, ((Laci, Labl, Laxa), (Myvo, Myyu)));"
+ves_tree <- read.tree(text = ves_tips)
+
+mor_tips <- "(Mome, (Ptpa, (Ptda, Ptpe)));"
+mor_tree <- read.tree(text = mor_tips)
+
+mol_tips <- "(Tabr, Nyfe);"
+mol_tree <- read.tree(text = mol_tips)
+
+super_tips <- 
+"(
+  (
+    ((Arja, (Stli, Stlu)), (Dero, Maca), Leye),
+    (Mome, (Ptpa, (Ptda, Ptpe)))
+  ), 
+  (
+    ((Anpa, Pihe), Epfu, Idph, ((Laci, Labl, Laxa), (Myvo, Myyu))), 
+    (Tabr, Nyfe)
+  ), 
+  Bapl
+);"
+super_tree <- read.tree(text = super_tips)
+
+EL <- rep(NA, nrow(super_tree$edge))
+
+# Emb
+EL[37] <- 52.5 # Bapl
+
+# Phy
+EL[4] <- 13 # Arja
+EL[c(6,7)] <- 2.5 # Stli Stlu
+EL[c(9, 10)] <- 14 # Dero Maca
+EL[11] <- 26 # Leye
+
+EL[5] <- EL[4] - EL[6] # Arja Stli Stlu
+EL[8] <- EL[11] - EL[9] # Leye Maca Dero
+EL[3] <- EL[11] - EL[4] # Leye Maca Dero Arja Stli Stlu
+
+# Mor
+EL[c(17, 18)] <- 13 # Ptpe Ptda
+EL[15] <- 15 # Ptpa
+EL[13] <- 26.5 # Mome
+
+EL[16] <- EL[15] - EL[17] # Ptpe Ptda Ptpa
+EL[14] <- EL[13] - EL[15] # Ptpe Ptda Ptpa Mome
+
+# Ves
+EL[c(22, 23)] <- 20 # Anpa Pihe
+EL[c(24, 25)] <- 39 # Epfu Idph
+EL[c(28, 29, 30)] <- 8 # Laxa Labl Laci
+EL[c(32,33)] <- 15 # Myyu Myvo
+
+EL[27] <- 29 - EL[28] # Myyu Myvo Laxa Labl Laci
+EL[31] <- 29 - EL[32] # Laxa Labl Laci Myyu Myvo
+EL[21] <- EL[24] - EL[22] # Anpa Pihe Epfu Idph
+EL[26] <- EL[24] - (EL[27] + EL[28]) # Anpa Pihe Epfu Idph # Myyu Myvo Laxa Labl Laci
+
+# Mol
+EL[c(35, 36)] <- 36 # Nyfe Tabr
+
+# Chiroptera
+EL[2] <- 28.5 - EL[11] # Phy Mor
+EL[12] <- 28.5 - EL[13] # Mor Phy
+EL[20] <- 49.5 - EL[24] # Ves Mol
+EL[34] <- 49.5 - EL[35] # Mol Ves
+EL[19] <- EL[37] - (EL[20] + EL[21] + EL[22]) # Emp Ves Mol
+EL[1] <- EL[37] - (EL[2] + EL[11]) # Emp Ves Mol Phy Mor
+
+
+super_tree$edge.length <- EL
+
+plot.phylo(super_tree)
+```
+

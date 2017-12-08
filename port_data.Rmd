@@ -1,0 +1,83 @@
+---
+title: "Port Preprocessed Data to R"
+author: "J.P. Meagher"
+date: "20 October 2017"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = F)
+```
+
+As MATLAB offered a far superior toolkit for preprocessing the echolocation calls, this preprocessing was done in that environment. The preprocessed spectrograms produced must now be ported into R for further analysis.
+
+# Packages
+
+The key package here is the `R.matlab` package which allows the reading and writing of `mat` files.
+
+The tidyverse and batwork packages are included as the spectrograms will be appended to the `mexican_bat_calls` dataset.
+
+```{r packages}
+library(tidyverse)
+library(R.matlab)
+library(batwork)
+library(magrittr)
+```
+
+# Load Data
+
+Convert the mat files to a list then extract the spectrograms into a list with a convenient format.
+
+These columns will be concatenated with the `mexican_bat_calls` dataset and then saved for future reference.
+
+```{r load r data}
+df <- mexican_bat_calls
+```
+
+```{r add family variable}
+fam <- c('Emb', 'Mol', 'Ves', 'Mor', 'Phy')
+
+family_key <- df %>% 
+  select(species) %>% 
+  unique %>% 
+  mutate(family = c(fam[3], fam[5], fam[1], fam[5], fam[3], fam[3], fam[3], fam[3], fam[3], fam[5],
+  fam[5], fam[4], fam[3], fam[3], fam[2], fam[3], fam[4], fam[4], fam[4], fam[5], 
+  fam[5], fam[2])) %>% 
+  mutate(family = factor(family))
+
+sp <- family_key %>% use_series(species)
+fam <- family_key %>% use_series(family)
+
+df <- df %>% 
+  mutate(family = species %>% sapply(function(x) fam %>% extract(x %>% equals(sp) %>% which))) %>% 
+  select(bat, species, family, sex, calls)
+
+rm(fam, sp, family_key)
+```
+
+```{r load matlab data}
+loc <- 'C:/Users/joe/Documents/MATLAB/ancestral-reconstruction'
+full_fl <- 'preprocessed_full_spectrograms_reordered.mat'
+thresh_fl <- 'preprocessed_thresholded_spectrograms_reordered.mat'
+
+full <- readMat(paste(loc, full_fl, sep = '/')) %>%
+  extract2(1) %>% 
+  lapply(extract2, 1) %>% 
+  lapply(extract, c(F, T), c(F, T))
+
+thresholded <- readMat(paste(loc, thresh_fl, sep = '/')) %>%
+  extract2(1) %>% 
+  lapply(extract2, 1) %>% 
+  lapply(extract, c(F, T), c(F, T))
+
+df <- cbind(df, I(full), I(thresholded))
+
+rm(full, full_fl, loc, thresh_fl, thresholded)
+```
+
+```{r save new df}
+saveRDS(df, 'preprocessed_calls.RDS')
+```
+
+
+

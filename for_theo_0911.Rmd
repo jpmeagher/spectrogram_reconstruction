@@ -1,0 +1,635 @@
+---
+title: "Supervision Meeting Demo"
+author: "J.P. Meagher"
+date: "8 November 2017"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, message = F)
+```
+
+Here is a summary and extension of the results I presented to Kate at the CBER on Monday 6th November 2017.
+
+# Packages
+
+Packages used in this analysis are as follows:
+
+```{r packages, echo = T}
+library(signal) # Produce Spectrogram
+library(tidyverse) # see http://r4ds.had.co.nz/
+library(magrittr) # pipe operator and alaises
+library(batwork) # my own package, long form call data
+library(sdsBAT) # my own package, tree data and functions for ancestral reconstruction
+library(ape) # Analyses of Phylogenetics and Evolution
+library(RColorBrewer) # for pretty pictures
+library(ggridges) # Joy plots
+library(ggtree) ## ggplot for phylogenetic trees
+```
+
+# Data
+
+Preprocessing of echolocation call spectrograms was performed in Matlab. 
+
+```{r data}
+sp <- sdsBAT::phylogeny$tip.label
+
+df <- readRDS('preprocessed_calls.RDS') %>% 
+  select(bat, species, family, full) %>% 
+  mutate(species = factor(species, levels = sp))
+
+t <- seq(from = 0, to = 1, length.out = 100) %>% 
+  extract(c(F, T))
+
+f <- seq(from = 0, to = 250, length.out = 257)
+restricted_f <- f %>% 
+  extract(f > 9 & f < 212) %>% 
+  extract(c(F, T))
+
+remove(sp, f)
+```
+
+# Mean Spectrograms
+
+Mean spectrograms for the sample to the bat, species, and family levels may all be of interest in this analysis.
+
+```{r mean spectrograms}
+temp <- df %>% 
+  group_by(bat, family) %>% 
+  summarise(species = unique(species))
+
+bat <- temp %>% use_series(bat)
+species <- temp %>% use_series(species)
+family <- temp %>% use_series(family)
+
+by_bat <- df %>% 
+  use_series(full) %>% 
+  unlist %>% 
+  array(dim = c(104*50, df %>% nrow)) %>%
+  apply(1, function(x) tapply(x, df %>% use_series(bat), mean)) %>% 
+  as_tibble() %>% 
+  mutate(bat = bat, species = species, family = family) %>% 
+  select(bat, species, family, starts_with('V')) %>% 
+  group_by(bat, family, species) %>% 
+  nest %>% 
+  mutate(full = map(data, function(x) x %>% unlist %>% array(dim = c(104,50)))) %>% 
+  select(-data) %>% 
+  ungroup
+
+temp <- by_bat %>% 
+  group_by(species) %>% 
+  summarise(family = unique(family))
+
+species <- temp %>% use_series(species)
+family <- temp %>% use_series(family)
+
+
+by_species <- by_bat %>% 
+  use_series(full) %>% 
+  unlist %>% 
+  array(dim = c(104*50, by_bat %>% nrow)) %>%
+  apply(1, function(x) tapply(x, by_bat %>% use_series(species), mean)) %>% 
+  as_tibble() %>% 
+  mutate(species = species, family = family) %>% 
+  select(species, family, starts_with('V')) %>% 
+  group_by(family, species) %>% 
+  nest %>% 
+  mutate(full = map(data, function(x) x %>% unlist %>% array(dim = c(104,50)))) %>% 
+  select(-data) %>% 
+  ungroup
+
+family <- by_species %>% use_series(family) %>% unique
+
+by_family <- by_species %>% 
+  use_series(full) %>% 
+  unlist %>% 
+  array(dim = c(104*50, by_species %>% nrow)) %>%
+  apply(1, function(x) tapply(x, by_species %>% use_series(family), mean)) %>% 
+  as_tibble() %>% 
+  mutate(family = family) %>% 
+  select(family, starts_with('V')) %>% 
+  group_by(family) %>% 
+  nest %>% 
+  mutate(full = map(data, function(x) x %>% unlist %>% array(dim = c(104,50)))) %>% 
+  select(-data) %>% 
+  ungroup
+
+rm(bat, family, species, temp)
+```
+
+```{r mean figures, fig.height = 4, fig.cap = "Plotted above the mean spectrogram for a randomly selected individual bat along with the species and family level mean spectrograms for that individual. These plots serve as a sense check on the data." }
+par(mfrow = c(1,3))
+b <- sample.int(by_bat %>% nrow, 1)
+
+by_bat %>% 
+  filter(bat == b)
+
+by_bat %>% 
+  filter(bat == b) %>% 
+  use_series(full) %>% extract2(1) %>% t %>% 
+  image(t, restricted_f, .,
+    col = brewer.pal(9, 'Spectral'),
+    xlab = 'Time', ylab = 'Frequency (kHz)',
+    main = paste('Mean Spectrogram for bat', b))
+
+s <- by_bat %>% use_series(species) %>% extract(b)
+by_species %>% 
+  filter(species == s) %>% 
+  use_series(full) %>% extract2(1) %>% t %>% 
+  image(t, restricted_f, .,
+    col = brewer.pal(9, 'Spectral'),
+    xlab = 'Time', ylab = 'Frequency (kHz)',
+    main = paste(s, 'Mean Spectrogram'))
+
+f <- by_bat %>% use_series(family) %>% extract(b)
+by_family %>% 
+  filter(family == f) %>% 
+  use_series(full) %>% extract2(1) %>% t %>% 
+  image(t, restricted_f, .,
+    col = brewer.pal(9, 'Spectral'),
+    xlab = 'Time', ylab = 'Frequency (kHz)',
+    main = paste(f, 'Mean Spectrogram'))
+par(mfrow = c(1,1))
+rm(b, s, f)
+```
+
+# Bootstrapped Sample
+
+As there is variation in the number of bats per species and calls per bat in this sample I think that it is appropriate to create a bootstrapped sample of calls upon which to run the analysis. Note also that it is the mean spectrogram per each species that we are particularl interested in and so the bootstrapped sample will contain estimates of the mean spectrogram per each species.
+
+```{r bootstrapped sample}
+temp <- df %>% 
+  group_by(bat) %>% 
+  sample_n(1) %>% 
+  ungroup %>% 
+  group_by(species) %>% 
+  sample_n(4) %>% 
+  ungroup
+
+boot_mean <- df %>% 
+  group_by(species) %>% 
+  summarise(family = unique(family)) %>% 
+  ungroup %>% 
+  cbind(
+    check <- temp %>%
+      use_series(full) %>% 
+      unlist %>% 
+      array(dim = c(104*50, temp %>% nrow)) %>% 
+      apply(1, function(x) tapply(x, temp %>% use_series(species), mean))
+  ) %>% 
+  group_by(species, family) %>% 
+  nest %>%
+  mutate(full = map(data, function(x) x %>% unlist %>% array(dim = c(104,50)))) %>% 
+  select(-data) %>% 
+  ungroup
+
+for(i in 1:24){
+  temp <- df %>% 
+    group_by(bat) %>% 
+    sample_n(1) %>% 
+    ungroup %>% 
+    group_by(species) %>% 
+    sample_n(4) %>% 
+    ungroup
+  
+  temp_mean <- df %>% 
+  group_by(species) %>% 
+  summarise(family = unique(family)) %>% 
+  ungroup %>% 
+  cbind(
+    check <- temp %>%
+      use_series(full) %>% 
+      unlist %>% 
+      array(dim = c(104*50, temp %>% nrow)) %>% 
+      apply(1, function(x) tapply(x, temp %>% use_series(species), mean))
+  ) %>% 
+  group_by(species, family) %>% 
+  nest %>%
+  mutate(full = map(data, function(x) x %>% unlist %>% array(dim = c(104,50)))) %>% 
+  select(-data) %>% 
+  ungroup
+  
+  boot_mean <- rbind(boot_mean, temp_mean)
+  remove(temp, temp_mean)
+}
+
+boot_mean <- boot_mean %>% 
+  arrange(species)
+```
+
+```{r bootstrapped sample tree}
+n_samples <- 25
+boot_tree <- phylogeny
+
+for(i in phylogeny %>% use_series(tip.label)){
+  individuals <- stree(n_samples)
+  individuals$edge.length <- rep(0, n_samples)
+  individuals$tip.label <- rep(i, n_samples)
+  
+  boot_tree <- bind.tree(boot_tree, individuals, which(boot_tree$tip.label == i))
+}
+
+rm(individuals, n_samples)
+```
+
+# Principal Components as Evolutionary Features
+
+A Principal Components Analysis is performed on the data, yielding a dimension reduction along modes of variation. Each principal component can be considered to be a suite of evolutionary features, with each suite being orthogonal to every other suite.
+
+```{r pca}
+pca <- boot_mean %>% 
+  use_series(full) %>%
+  unlist %>% 
+  array(dim = c(50*104, df %>% nrow)) %>% 
+  extract(, sample.int(df %>% nrow)) %>% 
+  t %>% 
+  prcomp
+```
+
+## Component Scores
+
+See Figure 2.
+
+```{r scores, fig.cap = "The scores associated with each component provide insight into the proportion of the sample variance captured by the corresponding principal component. This PCA was performed on a sample of bootstrapped mean estimates, so some of the bat level variation should have been stripped from the data. The bootstrapped sample was also weighted with the same number of samples from each species, an attempt at ensuring no one species dominated modes of variation identified. The scores above suggest that the dataset of echolocation call spectrograms is very high dimensional, requiring 13 components to explain 75% of the variance, while 16 are required to explain 90%. It can be shown that 9 components capture more than 2.5% of the variation, and 14 capture more than 1% of the variation."}
+s_var <- pca %>% use_series(sdev) %>% raise_to_power(2) %>% sum
+
+#pca %>% use_series(sdev) %>% raise_to_power(2) %>% divide_by(s_var) %>% cumsum %>% is_less_than(0.9) %>% sum
+#pca %>% use_series(sdev) %>% raise_to_power(2) %>% divide_by(s_var) %>% is_greater_than(0.01) %>% sum
+
+n <- 20
+
+pca %>% use_series(sdev) %>% raise_to_power(2) %>% 
+  extract(1:n) %>% divide_by(s_var) %>% cumsum %>% 
+  plot(xlab = 'Component', ylab = 'Proportion', main = 'Variance Explained',
+    pch = 19, col = 2, ylim = c(0, 1))
+pca %>% use_series(sdev) %>% raise_to_power(2) %>% 
+  extract(1:n) %>% divide_by(s_var) %>% cumsum %>% 
+  lines(col = 2)
+pca %>% use_series(sdev) %>% raise_to_power(2) %>% 
+  extract(1:n) %>% divide_by(s_var) %>% 
+  points(col = 3, pch = 19)
+pca %>% use_series(sdev) %>% raise_to_power(2) %>% 
+  extract(1:n) %>% divide_by(s_var) %>% 
+  lines(col = 3)
+
+legend('topleft', legend = c('Cumulative Sum', 'Per Component'), pch = 19, col = c(2,3))
+rm(s_var, n)
+```
+
+```{r centre spectrograms}
+boot_mean <- boot_mean %>% 
+  mutate(centred = map(full, function(x) x %>% subtract(pca %>% use_series(center))))
+```
+
+## Score Distribution
+
+See Figure 3.
+
+```{r pc scores}
+n <- 15
+
+pc_scores <- boot_mean %>% 
+  select(species, family) %>% 
+  cbind(pca %>% 
+    use_series(rotation) %>% 
+    extract(, 1:n) %>% 
+    t %>% 
+    multiply_by_matrix( boot_mean %>%
+        select(centred) %>%
+        unlist %>% 
+        array(dim = c(104*50, boot_mean %>% nrow))
+    ) %>% 
+    t %>% 
+    as_tibble()
+  )
+```
+
+```{r, fig.cap = "Distribution of component scores for a selected Principal component loading, separated out by species."}
+pc_scores %>% 
+  ggplot() +
+  geom_density_ridges(aes(x = PC1, y = species, color = family, fill = family)) +
+  scale_colour_brewer(palette = "Dark2") +
+  scale_fill_brewer(palette = "Dark2") +
+  labs(
+    title = 'Principal Component Scores',
+    y = 'Species'
+  )
+```
+
+It seems reasonable to think that those principal components which explain most variation would be capturing variation between species rather than within species, but is there some clever way to check this?
+
+## Component PGP Hyperparameters
+
+Hyperparameters for the phylogenetic Gaussian Processes can be estimated from these principal components
+
+```{r pc hyperparameters}
+pc_mle <- pc_scores %>% 
+  select(starts_with('PC')) %>%
+  apply(2, sdsBAT:::pou_type2mle, boot_tree, logl_function = pou_logl_fast,
+  optim_function = "optim", optim_method = "Nelder-Mead",
+  lower_initialisation = c(0, 0, 0), upper_initialisation = c(1, 100, 1),
+  n_restarts = 10)
+
+rownames(pc_mle) <- c('s_p', 'l', 's_n', 'logl')
+
+scaled_pc_mle <- pc_scores %>% 
+  select(starts_with('PC')) %>%
+  mutate_all(scale) %>% 
+  apply(2, sdsBAT:::pou_type2mle, boot_tree, logl_function = pou_logl_fast,
+  optim_function = "optim", optim_method = "Nelder-Mead",
+  lower_initialisation = c(0, 0, 0), upper_initialisation = c(1, 100, 1),
+  n_restarts = 10)
+
+rownames(scaled_pc_mle) <- c('s_p', 'l', 's_n', 'logl')
+
+print('BOOTSTRAPPED PC MLE HYP')
+pc_mle %>% round(2)
+
+print('BOOTSRAPPED SCALED PC MLE HYP')
+scaled_pc_mle %>% round(2)
+```
+
+The scaled principal component scores seem to belong to a different PGP than the un scaled ones. My intuition led me to believe that they would be the same, except for a scaling constant on the noise, that is they would have very similar length scale parameters.
+
+I dont understand why scaling the scores is having an impact on the length-scale.
+
+## Approximation of Species level Mean Spectrograms
+
+One approach to investigating the quality of the components identified is to consider how much the projection of a spectrogram into a component space differs from the original.
+
+```{r project species level}
+by_species <- by_species %>% 
+  mutate(centred = map(full, function(x) x %>% subtract(pca %>% use_series(center))))
+
+n <- 15
+
+by_species_proj <- by_species %>% 
+  select(species) %>% 
+  cbind(
+    pca %>%
+      use_series(rotation) %>% 
+      extract(, 1:n) %>% 
+      t %>% 
+      multiply_by_matrix( by_species %>%
+          select(centred) %>%
+          unlist %>% 
+          array(dim = c(104*50, by_species %>% nrow))
+      ) %>% 
+      t %>% 
+      multiply_by_matrix(
+        pca %>% 
+          use_series(rotation) %>% 
+          extract(, 1:n) %>% 
+          t
+      ) %>% 
+      as_tibble()
+  ) %>% 
+  group_by(species) %>% 
+  nest %>% 
+  mutate(projection = map(data, function(x){
+    x %>% unlist %>% add(pca %>% use_series(center)) %>% array(dim = c(104, 50))
+  })) %>% 
+  select(-data)
+```
+
+```{r actual vs. projection, fig.height = 4, fig.cap = "Plotted above the mean spectrogram for a randomly selected species alongside the call reconstructed from the component space."}
+s <- sample(by_species %>% use_series(species), 1)
+
+par(mfrow = c(1,2))
+by_species %>% 
+  filter(species == s) %>% 
+  use_series(full) %>% extract2(1) %>% t %>% 
+  image(t, restricted_f, .,
+    col = brewer.pal(9, 'Spectral'),
+    xlab = 'Time', ylab = 'Frequency (kHz)',
+    main = paste(s, 'Mean Spectrogram'))
+
+by_species_proj %>% 
+  filter(species == s) %>% 
+  use_series(projection) %>% extract2(1) %>% t %>% 
+  image(t, restricted_f, .,
+    col = brewer.pal(9, 'Spectral'),
+    xlab = 'Time', ylab = 'Frequency (kHz)',
+    main = paste(s, 'Projected Spectrogram'))
+par(mfrow = c(1,1))
+```
+
+## Exploration of Components
+
+```{r global mean spectrogram}
+global <- pca %>% 
+  use_series(center) %>% 
+  array(dim = c(104, 50))
+
+global %>% 
+  t %>% 
+  image(t, restricted_f, .,
+    col = brewer.pal(9, 'Spectral'),
+    xlab = 'Time', ylab = 'Frequency (kHz)',
+    main = 'Global Mean Spectrogram')
+```
+
+```{r second animate, eval = F, echo = T}
+#dir.create("animation")
+setwd("animation")
+
+n <- 3
+
+lambda <- seq(from = pca %>% use_series(sdev) %>% extract(n) %>% multiply_by(-2), 
+  to  = pca %>% use_series(sdev) %>% extract(n) %>% multiply_by(2), 
+  length.out = 201)
+
+component <- pca %>% 
+  use_series(rotation) %>%
+  extract(, n) %>% 
+  array(dim = c(104, 50))
+
+for(i in seq_along(lambda)){
+  png(file=paste('example', sprintf("%03d", i), '.png', sep = ''), width=800, height=600)
+  component %>%
+    multiply_by(lambda[i]) %>% 
+    add(global) %>% 
+    t %>%
+    image(t, restricted_f, ., 
+      col = brewer.pal(9, 'Spectral'), 
+      xlab = 'Time (ms)', ylab = 'Frequency (kHz)', 
+      main = paste('Global Mean Spectrogram plus\n', lambda[i] %>% round(1),'times component' ,n))
+  dev.off()
+}
+
+system('"C:/Program Files/ImageMagick-7.0.7-Q16/magick.exe" *.png -delay 50 pc3.gif')
+file.remove(list.files(pattern=".png"))
+```
+
+## Ancestral Reconstruction from Principal Components
+
+The goal of this analysis is Ancestral Reconstruction of Echolocation Call spectrograms. Verifying ancestral calls is impossible, however perhaps we can get a feel for the effectiveness of the method by attempting an Ancestral reconsturction for exisiting species. This amounts to a leave one species out cross validation.
+
+```{r by species scores}
+n <- 15
+
+by_species_scores <- by_species %>% 
+  select(species, family) %>% 
+  cbind(pca %>% 
+    use_series(rotation) %>% 
+    extract(, 1:n) %>% 
+    t %>% 
+    multiply_by_matrix( by_species %>%
+        select(centred) %>%
+        unlist %>% 
+        array(dim = c(104*50, by_species %>% nrow))
+    ) %>% 
+    t %>% 
+    as_tibble()
+  )
+```
+
+```{r}
+s <- by_species %>% use_series(species) %>% sample(1)
+
+
+```
+
+# ICA
+
+An Independent Components Analysis offers an alternative suite of evolutionary features, however, this method forces the analyst to choose the number of components desired and this choice will affect the structure of Independent Components selected. If the PCA revealed a definite number of modes of variation then selecting the number of independent components is simplified, but in this example this is not the case. Looking at various numbers of independent components and simply picking the 'best set' that is problematic, what would constitute the best set?
+
+Despite these misgivings, 15 independent components will be identified and the proportion of variance in the sample explained by these components explored,
+
+```{r}
+n <- 15
+ica <- cubica34(pca %>% use_series(rotation) %>% extract(, 1:n) %>% t)
+orth_ic <- ica %>% use_series(y) %>% t %>% divide_by(5200 %>% sqrt)
+
+ic_scores <- boot_mean %>% 
+  select(species, family) %>% 
+  cbind(orth_ic %>% 
+    t %>% 
+    multiply_by_matrix( boot_mean %>%
+        select(centred) %>%
+        unlist %>% 
+        array(dim = c(104*50, boot_mean %>% nrow))
+    ) %>% 
+    t %>% 
+    as_tibble()
+  )
+
+#ic_scores %>% select(starts_with('v')) %>% summarise_all(var) %>% sum
+#pca %>% use_series(sdev) %>% raise_to_power(2) %>% extract(1:n) %>% sum
+```
+
+```{r, fig.cap = "Distribution of component scores for a selected Independent component loading, separated out by species."}
+ic_scores %>% 
+  ggplot() +
+  geom_density_ridges(aes(x = V2, y = species, color = family, fill = family)) +
+  scale_colour_brewer(palette = "Dark2") +
+  scale_fill_brewer(palette = "Dark2") +
+  labs(
+    title = 'Independent Component Scores',
+    y = 'Species'
+  )
+```
+
+It seems that the sum of the variance of the orthogonal Independent Component scores is less that that for the principal components. I believe this indicates that the independent components capture less of the samples variation than the principal components. It is worth noting however that no independent component is especially dominant in terms of the proportion of variation it captures. This may be a desirable property of evolutionary features.
+
+# VARIMAX
+
+Another set of alternative components can be obtained by a VARIMAX rotation of the principal components. A varimax rotation rotates components such that the sum of the variances of the squared loadings is maximised. This results in loadings where weights at a particular point are encouraged to be either very large or very small.
+
+```{r}
+vmax <- varimax(pca %>% use_series(rotation) %>% extract(, 1:n))
+
+vmax_scores <- boot_mean %>% 
+  select(species, family) %>% 
+  cbind(
+    vmax %>% 
+      use_series(loadings) %>%
+      t %>% 
+      multiply_by_matrix(
+        boot_mean %>% 
+          select(centred) %>% 
+          unlist %>% 
+          array(dim = c(104*50, boot_mean %>% nrow))) %>% 
+      t %>% as_tibble())
+
+# vmax_scores %>% select(starts_with('PC')) %>% summarise_all(var)
+```
+
+```{r, fig.cap = "Distribution of component scores for a selected VARIMAX component loading, separated out by species."}
+vmax_scores %>% 
+  ggplot() +
+  geom_density_ridges(aes(x = PC3, y = species, color = family, fill = family)) +
+  scale_colour_brewer(palette = "Dark2") +
+  scale_fill_brewer(palette = "Dark2") +
+  labs(
+    title = 'VARIMAX Component Scores',
+    y = 'Species'
+  )
+```
+
+The VARIMAX scores do a much better job at preserving the proportion of variation explained than the independent components, However the scores associated with VARIMAX components are not uncorrelated. I an not fully sure if the scores associated with Independent Components are or are not uncorrelated.
+
+From a theoretical perspective the PCA components are sufficient, however, it may be that when it comes to applying these methods, ICA or VARIMAX offers a better solution.
+
+# Estimating Hyperparameters
+
+Type II Maximum Likelihood Estimation can be performed on the Component Scores to estimate hyperparameters of the phylogeneetic Gaussian process for evolution. The Principal component scores can be treated as independent Phylogenetic Gaussian processes.
+
+
+
+
+
+```{r ic hyperparameters}
+ic_mle <- ic_scores %>% 
+  select(starts_with('V')) %>% 
+  apply(2, sdsBAT:::pou_type2mle, boot_tree, logl_function = pou_logl_fast,
+  optim_function = "optim", optim_method = "Nelder-Mead",
+  lower_initialisation = c(0, 0, 0), upper_initialisation = c(1, 100, 1),
+  n_restarts = 10)
+
+rownames(ic_mle) <- c('s_p', 'l', 's_n', 'logl')
+
+scaled_ic_mle <- ic_scores %>% 
+  select(starts_with('V')) %>% 
+  mutate_all(scale) %>% 
+  apply(2, sdsBAT:::pou_type2mle, boot_tree, logl_function = pou_logl_fast,
+  optim_function = "optim", optim_method = "Nelder-Mead",
+  lower_initialisation = c(0, 0, 0), upper_initialisation = c(1, 100, 1),
+  n_restarts = 10)
+
+rownames(scaled_ic_mle) <- c('s_p', 'l', 's_n', 'logl')
+
+print('IC MLE HYP')
+ic_mle %>% round(2)
+print('SCALED IC MLE HYP')
+scaled_ic_mle %>% round(2)
+```
+
+```{r varimax hyperparameters}
+vmax_mle <- vmax_scores %>% 
+  select(starts_with('PC')) %>% 
+  apply(2, sdsBAT:::pou_type2mle, boot_tree, logl_function = pou_logl_fast,
+  optim_function = "optim", optim_method = "Nelder-Mead",
+  lower_initialisation = c(0, 0, 0), upper_initialisation = c(1, 100, 1),
+  n_restarts = 5)
+
+rownames(vmax_mle) <- c('s_p', 'l', 's_n', 'logl')
+
+sclaed_vmax_mle <- vmax_scores %>% 
+  select(starts_with('PC')) %>% 
+  mutate_all(scale) %>% 
+  apply(2, sdsBAT:::pou_type2mle, boot_tree, logl_function = pou_logl_fast,
+  optim_function = "optim", optim_method = "Nelder-Mead",
+  lower_initialisation = c(0, 0, 0), upper_initialisation = c(1, 100, 1),
+  n_restarts = 5)
+
+rownames(scaled_vmax_mle) <- c('s_p', 'l', 's_n', 'logl')
+
+print('VARIMAX MLE HYP')
+vmax_mle %>% round(2)
+
+print('SCALED VARIMAX MLE HYP')
+scaled_vmax_mle %>% round(2)
+```
+
+In order to produce MLE hyperparameter estimates that didn't just  write the scores for each component off as noise I have scaled the scores to have mean 0 and variance 1. However, in the case of principal components at least, scores already have mean 0. This discrepancy is brought about by the principal components and the scores used for MLE coming from different datasets. Should I just do the full analysis on a single dataset? Should I replace the preprocessed data used with the bootstrapped sample, or vice versa?

@@ -1,0 +1,92 @@
+---
+title: "Project Overview"
+author: "J.P. Meagher"
+date: "September / October 2017"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = F)
+```
+
+The aim of this project is to perform ancestral reconstruction of bat echolocation calls.
+
+This document will serve as a high level overview of my work allowing me to present an uncluttered summary. Individual sections will be dealt with in detail in separate documents, while functions will be written in the `batwork` package.
+
+```{r package}
+library(batwork)
+library(tidyverse)
+library(magrittr)
+library(RColorBrewer)
+```
+
+
+# Call Spectrograms
+
+The first step in this analysis is to transform the call recording waveforms into a time-frequency representation, the spectrogram. The following code performs this transformation.
+
+```{r spectrogram}
+df <- mexican_bat_calls
+
+df <- df %>% 
+  mutate(time = map(calls, get_spectrogram_details, detail = 'time'), 
+    psd = map(calls, get_psd))
+
+observed_frequencies <- get_spectrogram_details(
+  df %>% use_series('call') %>% extract2(1), 
+  detail = 'freq')
+```
+
+Bats use the 9-212 kHz frequency band for their echolocation calls, and so the spectrograms used to represent these calls will be restricted to this frequency band.
+
+```{r restrict}
+band <- observed_frequencies > 9000 & observed_frequencies < 212000
+
+df <- df %>% 
+  mutate(restricted = map(psd, extract, , band)) %>% 
+  mutate(restricted = map(restricted, log10)) %>% 
+  mutate(restricted = map(restricted, multiply_by, 10))
+```
+
+Smoothing the spectrogram provides an improved estimate of the underlying surface function. A wavelet image denoiser is used for this purpose.
+
+```{r smoothing}
+df <- df %>% 
+  mutate(smoothed = map(restricted, waveslim::denoise.dwt.2d, J = 2))
+```
+
+Next map the all the spectrograms to the same regular grid. This can be done by a bilinear interpolation and rescaling of the time axis such that the time for each spectrogram is over the interval [0, 1]. 
+
+```{r interpolate}
+df <- df %>% 
+  mutate(regularised = map(smoothed, grid_interpolation))
+```
+
+Define the new time and frequency axes.
+
+```{r axes}
+f <- seq(observed_frequencies %>% extract(band) %>% min,
+  observed_frequencies %>% extract(band) %>% max,
+  length.out = df %>% use_series('regularised') %>% extract2(1) %>% ncol)
+
+t <- seq(0, 1,
+  length.out = df %>% use_series('regularised') %>% extract2(1) %>% nrow)
+```
+
+These regularised spectrograms are all that need to be carried forward for further analysis. 
+
+```{r discard}
+df <- df %>%
+  select(bat, species, sex, regularised)
+```
+
+
+```{r example spectrogram, echo = F, fig.cap = "An example of a smoothed, regularised spectrogram surface."}
+n <- sample.int(df %>% nrow, 1)
+
+image(t, f %>% divide_by_int(1000), 
+  df %>% use_series('regularised') %>% extract2(n),
+  main = 'Example Spectrogram', 
+  xlab = 'Time', ylab = 'Frequency (kHz)',
+  col = brewer.pal(9, 'Spectral'))
+```

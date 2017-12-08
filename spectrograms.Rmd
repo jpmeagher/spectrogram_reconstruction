@@ -1,0 +1,110 @@
+---
+title: "Call Spectrograms"
+author: "J.P. Meagher"
+date: "2 October 2017"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = T, eval = F, message = F)
+```
+
+This document will present in detail the steps required to obtain echolocation call spectrograms from the waveforms of echolocation call recordings.
+
+One of the problems associated with comparing acoustic signals is phase variation. Recordings of signals carrying the same information, sampled with the same sampling rate, usually have different lengths. This problem carries over to the spectrograms of these signals, meaning that the spectrograms will have different time resolutions. Methods for dealing with this problem include interpolation, upsampling, and downsampling, either of the original signal or the spectrogram.
+
+One approach to the problem is the variable overlap spectrogram. This means that the overlap between windows used in calculating the spectrogram are varied from signal to signal to ensure that the spectrograms are sampled at the same resolution. This is analagous to calculating eack spectrogram with maximal overlap and downsampling the resulting spectrograms to have a consistent time resolution.
+
+# Install Packages
+
+The following packages are required. They will be included as dependencies in the `batwork` package.
+
+```{r packages}
+library(batwork)
+library(tidyverse)
+library(magrittr)
+library(signal)
+library(RColorBrewer)
+library(waveslim)
+```
+
+# Call Data
+
+Explicitly call the data from the `batwork` package.
+
+```{r data}
+df <- mexican_bat_calls
+```
+
+# Spectrogram Function
+
+A function which will return the spectrogram (log short time power spectral density) of the echolocation call is required. Further details on [short time Fourier transform](https://en.wikipedia.org/wiki/Short-time_Fourier_transform) and [power spectral density](https://en.wikipedia.org/wiki/Spectral_density)
+
+```{r functions}
+x <- df %>% use_series(calls) %>% extract2(1)
+
+get_spectrogram_details <- function(x, 
+  detail = 'list', ...){
+   possible_details <- c('list', 'spec', 'time', 'freq')
+   
+  if(detail %in% possible_details %>% not){
+     stop("User must specify output required, either 'spec', 'time', 'freq', or 'list'.")
+   }
+  
+   y <- signal::specgram(x, ...)
+   
+   if(detail == 'list') return(y)
+   if(detail == 'time') return(y$t)
+   if(detail == 'freq') return(y$f)
+   if(detail == 'spec') {
+     return(y$S %>% t)
+   }
+}
+
+y <- get_spectrogram_details(x, detail = 'spec')
+
+get_psd <- function(x, ...){
+  
+  y <- get_spectrogram_details(x, detail = 'spec', ...) %>% 
+    abs %>% raise_to_power(2)
+  
+  return(y)
+}
+
+y <- get_psd(x)
+```
+
+# Apply to Data Frame
+
+Given a function which provides the required output, this function can be applied over the calls in the dataframe.
+
+```{r apply}
+df <- df %>% 
+  mutate(time = map(calls, get_spectrogram_details, detail = 'time'), 
+    psd = map(calls, get_psd))
+```
+
+# A different approach.
+
+There is another approach to calculating call spectrograms that can be taken. For this I am simply going to calculate the spectrogram with maximal overlap between windows. This should produce a very smooth spectrogram.
+```{r}
+x <- df %>% use_series(calls) %>% extract2(765)
+y <- get_psd(x, n = 512, Fs = 500000, window = hamming(256), overlap = 255) %>% log10 %>% multiply_by(10)
+
+y %>% image(col = brewer.pal(9, 'Spectral'))
+```
+
+I will then apply a wavelet smoother to the data to see what happens.
+```{r}
+z <- denoise.dwt.2d(t(y), J = 3, wf = 'd8')
+z %>% image(col = brewer.pal(9, 'Spectral'))
+```
+
+```{r}
+n <- 54
+y %>% extract(n,) %>% plot(type = 'l')
+z %>% extract(,n) %>% lines(col = 2)
+
+```
+
+

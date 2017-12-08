@@ -1,0 +1,109 @@
+---
+title: "Spectrogram Smoothing"
+author: "J.P. Meagher"
+date: "3 October 2017"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = F)
+```
+
+Call spectrograms are being modelled as functional data objects in this analysis. As such, spectrograms need to be smoothed.
+
+Previous analysis of spectrograms for a Romance language data set used smoothing splines for this task. However, wavelets may be the more appropriate smoothing method in this context.
+
+Here I will attempt to implement wavelet denoising for the spectrograms.
+
+# Packages
+
+```{r packages}
+library(batwork)
+library(tidyverse)
+library(magrittr)
+library(RColorBrewer)
+```
+
+# Data
+
+```{r data}
+df <- mexican_bat_calls
+
+df <- df %>% 
+  mutate(time = map(calls, get_spectrogram_details, detail = 'time'), psd = map(calls, get_psd))
+
+observed_frequencies <- get_spectrogram_details(df$calls[[1]], detail = 'freq')
+```
+
+# Restrict Spectrogram Space
+
+Bats use the frequency band 9-212 kHz for their echolocation calls, and so it is appropriate to restrict spectrograms to this band.
+
+```{r restrict}
+band <- observed_frequencies > 9000 & observed_frequencies < 212000
+
+df <- df %>% 
+  mutate(restricted = map(psd, extract, , band)) %>% 
+  mutate(restricted = map(restricted, log10)) %>% 
+  mutate(restricted = map(restricted, multiply_by, 10))
+```
+
+```{r fig1, fig.cap = "An example of a spectrogram restricted to relevant frequencies."}
+n <- sample.int(df %>% nrow, 1)
+df %>% use_series(restricted) %>% extract2(n) %>% image(col = brewer.pal(9, 'Spectral'))
+```
+
+# Wavelet Smoothing
+
+Wavelets can be used for image denoising and as the spectrogram is analagous to an image I will try the same procedure here.
+
+I have encountered some difficulties with the wavelet smoothing. Although it seems to do a relatively good job at producing a smooth underlying function, interpolation does not seem so straightforward as with smoothing splines. Interpolation is important for the surface registration. Perhaps I need to consider a smoothing spline approach.
+
+For the time being, use the wavelet smoothing function and then perform interpolation.
+
+```{r smoothing}
+df <- df %>% 
+  mutate(smoothed = map(restricted, waveslim::denoise.dwt.2d, J = 2))
+```
+
+```{r fig2, fig.cap = "An example of a restricted spectrogram to which wavelet smoothing has been applied."}
+n <- sample.int(df %>% nrow, 1)
+df %>% use_series(smoothed) %>% extract2(n) %>% image(col = brewer.pal(9, 'Spectral'))
+```
+
+# Interpolation
+
+Having obtained smooth spectrogram surfaces, interpolate so that every surface is reported on a regularised grid. 
+
+```{r interpolate}
+grid_interpolation <- function(z, n_x = 50L, n_y = 100L){
+  x_in <- seq(0, 1, length.out = z %>% nrow)
+  y_in <- seq(0, 1, length.out = z %>% ncol)
+  
+  x_out <- seq(0, 1, length.out = n_x)
+  y_out <- seq(0, 1, length.out = n_y)
+  
+  obj <- list(x = x_in, y = y_in, z = z)
+  grid.list <- list(x = x_out, y = y_out)
+  
+  z_interp <- fields::interp.surface.grid(obj = obj, grid.list = grid.list) %>% extract2('z')
+  
+  return(z_interp)
+}
+
+df <- df %>% 
+  mutate(regularised = map(smoothed, grid_interpolation))
+```
+
+```{r fig3, fig.cap = "An example of a restricted spectrogram to which wavelet smoothing has been applied mapped to the regularised grid."}
+n <- sample.int(df %>% nrow, 1)
+df %>% use_series(regularised) %>% extract2(n) %>%
+image(col = brewer.pal(9, 'Spectral'))
+```
+
+# Conclusion
+
+Smoothed spectrogram surfaces on the same regularised grid have been produced and some potential issues highlighted.
+
+* I may have spend some time with the wavelet smoothing step. I have a high level understanding of it and a justification for choosing wavelets over Garcia's method other than just the fact that Garcia's method has not been implemented in R.
+* I used a linear interpolation rather than a cubic one. For FDA I would like a smooth estimate of the underlying function. Practically it probably doesn't matter. There is a function in \textsf{Matlab} for cubic interpolation. Is it worth porting to R?
