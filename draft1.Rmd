@@ -1,0 +1,341 @@
+---
+title: "24 Month Review Report"
+author: "J.P. Meagher"
+date: "6 December 2017"
+output: html_document
+bibliography: bibliography.bib
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, message = F, warning = F, cache = T)
+```
+
+Presented here is material to accompany my 24 month progress review. This report presents a continuation of my work on the ancestral reconstruction of Bat Echolocation calls.
+
+# Modelling the evoluton of echolocation calls in bats: Phylogenetic Inference for Function-valued traits
+
+Function-valued traits [@meyer2005up] are characteristics of individual organisms or species that are observed along a continuum. Echolocation calls in bats can be considered to be such a trait.
+
+Modelling function-valued traits relies on techniques from functional data analysis [@ramsay2006functional], particularly the modelling of both phase and amplitude variation.
+
+Analysis of echolocation calls is not performed on the recorded acoustic signal directly. Instead the call is analysed through its spectrogram, the mapping of is Short Time Fourier Magnitude Spectrum to the decibel scale [@zhu2007real]. This time-frequency representation of the acoustic signal allows for the visualisation and comparison of echolocation call structures.
+
+When analysing echolocation calls, multiple calls can be recorded from an individual bat and each call recording is then transformed into it's spectrogram. These spectrograms are the functional data objects to be analysed. They are functions not only of time and frequency, but also of phylogeny. The phylogeny represents evolutionary relationships between species. Each species will correspond to a point on the phylogenetic tree $\mathbf{p} \in \mathcal{P}$, defining its relationship with all other species in terms of evolutionary time. Normalising the time continuum over which calls are recorded such that $t \in [0,1]$, taking the spectrum of Fourier frequencies to be $\omega \in [0,F]$ where $F$ is the Nyquist frequency, and letting $Y_{lm}(\cdot, \cdot, \mathbf{p})$ represent the pectrogram corresponding to the $m^{th}$ recording of the $l^{th}$ bat of species $\mathbf{p}$, consider the following.
+
+$$
+Y_{lm}(t, \omega, \mathbf{p}) = Y_{l}(h_{lm}^\mathbf{p}(t), \omega, \mathbf{p}) + Z_{lm}(t, \omega, \mathbf{p}),
+$$
+Where $Y_{l}(\cdot, \cdot, \mathbf{p})$ is the underlying spectrogram surface for the $l^{th}$ bat of the species at point $\mathbf{p}$ in the phylogeny, $h_{lm}^\mathbf{p}(\cdot)$ is the time warping function defining the phase variation observed in the $m^{th}$ call, and $Z_{lm}(\cdot, \cdot, \mathbf{p})$ is some zero mean noise process capturing variation over the surface associated with the recording in question, particularly observation noise over a Fourier transformed signal. It is assumed that phase variation over the spectrogram surface is only observed over the time axis.
+
+To model echolocation calls on the level of the individual bat within a particular species consider 
+
+$$
+Y_{l}(t, \omega, \mathbf{p}) = Y(h_{l}^\mathbf{p}(t), \omega, \mathbf{p}) + Z_{l}(t, \omega, \mathbf{p}),
+$$
+where $Y_{l}(\cdot, \cdot,\mathbf{p})$ is defined as above, $Y(\cdot, \cdot,\mathbf{p})$ is the representative spectrogram surface at the point $\mathbf{p}$ in the phylogeny, $h_{l}^\mathbf{p}(\cdot)$ is the time warping function defining the phase variation observed for the $l^{th}$ bat, and $Z_{l}(\cdot, \cdot,\mathbf{p})$ another zero mean noise process, this one describing variation within a species.
+
+It is this representative spectrogram surface over the phylogeny $Y(\cdot, \cdot,\cdot)$ which is of interest for phylogenetic inference. Suppose that this surface can be decomposed as
+
+$$
+Y(t, \omega, \mathbf{p}) = m(t, \omega) + Z(t, \omega, \mathbf{p}),
+$$
+where $m(t, \omega)$ is the mean trait surface and $Z(t, \omega, \mathbf{p})$ is the between species noise process over the phylogeny.
+
+This gives rise to a hierarchical model for the evolution of the echolocation trait in bats, that is
+
+$$
+\tilde{Y}_{lm}(t, \omega, \mathbf{p}) = m(h_{l}^\mathbf{p}(h_{lm}^\mathbf{p}(t)), \omega) + Z(h_{l}^\mathbf{p}(h_{lm}^\mathbf{p}(t)), \omega, \mathbf{p}) + Z_{l}(h_{lm}^\mathbf{p}(t), \omega, \mathbf{p}) + Z_{lm}(t, \omega, \mathbf{p}).
+$$
+For ancestral reconstruction of bat echolocation calls at the species level, it is $m(\cdot, \cdot)$, the mean trait surface, and $Z(\cdot, \cdot,\cdot)$, the variation process for the trait over the phylogeny that are of interest. 
+
+The model assumes that phase and amplitude variation are not only separable from each other but further separable to the recording, bat, and species level. Despite these simplifying assumptions, it is hoped that this model may offer some insight into the evolutionary process underlying this remarkable trait in bats. 
+
+Modelling $m(\cdot, \cdot)$ can done through some sort of weighted mean. Assuming that each of the noise processes are zero mean processes and further assuming that for each time warping function $\mathbb{E}[h(t)] = t$ then $\mathbb{E}[\tilde{Y}_{lm}(\cdot, \cdot, \mathbf{p})] = m(\cdot, \cdot)$ and so $m$ could be estimated by
+
+$$
+\hat{Y} = \frac{1}{P}\sum_{p = 1}^{P} \frac{1}{M}\sum_{m = 1}^{M} \frac{1}{L}\sum_{l = 1}^{L} \tilde{Y}_{lm}^\mathbf{p},
+$$
+
+where the mean has been taken over $L$ calls, $M$ bats and $P$ species separately to produce an unbiased estimator.
+
+Modelling $Z(\cdot, \cdot,\cdot)$ is more challenging. One approach is to model it as a phylogenetic Gaussian process with mean 0, as set out by @jones2013evolutionary. 
+
+A Gaussian process [@rasmussen2006gaussian], $Z(\cdot, \cdot,\cdot)$ is completely defined by its mean and covariance functions. Thus
+
+$$
+Z(t, \omega, \mathbf{p}) \sim \mathcal{GP}(0, \Sigma_p(t, t', \omega, \omega', \mathbf{p}, \mathbf{p}', \boldsymbol{\theta}))
+$$
+where $\Sigma_p$ is a positive definite kernel function for the phylogenetic process and $\boldsymbol{\theta}$ are the kernel hyperparameters. From this expression the problem of phylogenetic inference can be reduced to Gaussian process regression given a suitable kernel and hyperparameters. 
+
+In order to produce a tractable Gaussian process model for the evolution of a function-valued trait some simplifying model assumptions are made. 
+
+* **Assumption 1:** Conditional on their common ancestors in the phylogeny $\mathcal{p}$, the function-valued traits observed at $\mathbf{p}$ and $\mathbf{p}'$ are statistically independent.
+* **Assumption 2:** The statistical relationship between a function-valued trait at $\mathbf{p}$ and any of its descendants in $\mathcal{P}$ is independent of the topology of $\mathcal{P}$.
+
+Further to this @jones2013evolutionary show that if the phylogenetic process along $\mathcal{P}$ from the root to any given tip, called the marginal process, is defined by a kernel that is separable over the phylogeny and the trait space, then $\Sigma_p$ is itself separable, that is
+
+$$
+\Sigma_p(t, t', \omega, \omega', \mathbf{p}, \mathbf{p}', \boldsymbol{\theta}) = K(t, t', \omega, \omega', \boldsymbol{\theta}_s) k_p(\mathbf{p}, \mathbf{p}', \boldsymbol{\theta}_p).
+$$
+
+If Assumption 1 is strengthened to say that traits at $\mathbf{p}$ and $\mathbf{p}'$ are statistically independent given only the most recent common ancestor, that is to say that the process over the phylogeny is Markovian, then $k_p$ is restricted to the Ornstein-Uhelenbeck family of kernels, the only Gauss-Markov processes.
+
+Finally, if $K$ is assumed to be a Mercer kernel then there exists a set of determinitic basis functions $\Phi = \{\phi_q(\cdot, \cdot): q = 1,\dots, Q\}$ and corresponding independent univariate Gaussian processes $\mathbf{X} = \{X_q(\cdot): q = 1,\dots, Q\}$ such that
+$$
+f(t, \omega, \mathbf{p}) = \sum_{q = 1}^{Q} \phi_q(t, \omega) X_q(\mathbf{p})
+$$
+
+has the same distribution as $Z(\cdot, \cdot, \cdot)$. This has a very appealing interpretation that $\Phi$ represents a set of independent 'evolutionary features' for which the weight of each feature in the trait observed at point $\mathbf{p}$ is given by $\mathbf{X}(\mathbf{p})$. This expression lends itself to biological interpretation.
+
+Assuming that each $X_q(\mathbf{p}) \sim \mathcal{GP}(0, k_{p,q}(\mathbf{p}, \mathbf{p}', \boldsymbol{\theta}_{p,q}))$ is of the Ornstein-Uhelenbeck family, subject to some non-phylogenetic noise, then
+
+$$
+k_{p,q}(\mathbf{p}, \mathbf{p}', \boldsymbol{\theta}_{p,q}) = \sigma_{p,q}^2 \exp(\frac{d_\mathcal{P}(\mathbf{p}, \mathbf{p}')}{\ell_{q}}) + \sigma_{n,q}^2\delta(\mathbf{p}, \mathbf{p}')
+$$
+where the hyperparameters $\boldsymbol{\theta}_{p,q} = (\sigma_{p,q}, \ell_{q}, \sigma_{n,q})^\mathsf{T}$ are the phylogenetic noise, phylogenetic length-scale, and the non-phylogenetic noise respectively, $d_\mathcal{P}(\mathbf{p}, \mathbf{p}')$ is the distance between $\mathbf{p}$ and $\mathbf{p}'$ over $\mathcal{P}$, and $\delta(\mathbf{p}, \mathbf{p}')$ is the Dirac delta function.
+
+An analysis of the echolocation calls within the framework outlined above is implemented by preprocessing the call spectrograms in the manner laid out by @pigoli2015analysis. This preprocessing involves smoothing [@garcia2010robust] and time registration [@tang2008pairwise] of the spectrograms, to obtain a smooth surface which has been mapped to an absolute time scale for each spectrogram. By then estimating the mean surface for each species a dataset is created upon which phylogenetic inference by Gaussian process regression can be performed.
+
+$$
+\text{Include Plates Diagram Here}
+$$
+
+# Data
+
+Post processed echolocation call data accompanying @stathopoulos2017bat was used in this analysis. Live bats were caught, identified, and recorded at a sampling frequency of 500 kHz. 
+In total the dataset consists of 22 species from five families, 449 individual bats and 1816 individual echolocation call recordings.
+After preprocessing acoustic signals to produce smooth spectrogram surfaces for each call recording the dataset was resampled to provide a set of 25 estimates of the mean spectrogram for each species. This involved sampling a single surface from 4 individual bats in each species and using the arithmetic mean over these surfaces as an estimate for the species mean surface. It was on the resampled dataset that phylogenetic inference was performed.
+
+The bat super-tree presented by @collen2012evolution  provided the phylogenetic tree of the recorded bat species, $\mathcal{P}$.
+
+```{r packages}
+library(signal) # Produce Spectrogram
+library(tidyverse) # see http://r4ds.had.co.nz/
+library(magrittr) # pipe operator and alaises
+library(batwork) # my own package, long form call data
+library(sdsBAT) # my own package, tree data and functions for ancestral reconstruction
+library(ape) # Analyses of Phylogenetics and Evolution
+library(RColorBrewer) # for pretty pictures
+library(ggridges) # Joy plots
+library(ggtree) ## ggplot for phylogenetic trees
+```
+
+```{r phylogeny}
+super_tips <- 
+"(
+  (
+    ((Arja, (Stli, Stlu)), (Dero, Maca), Leye),
+    (Mome, (Ptpa, (Ptda, Ptpe)))
+  ), 
+  (
+    ((Anpa, Pihe), Epfu, Idph, ((Laci, Labl, Laxa), (Myvo, Myyu))), 
+    (Tabr, Nyfe)
+  ), Bapl)
+;"
+super_tree <- read.tree(text = super_tips)
+
+EL <- rep(NA, nrow(super_tree$edge))
+
+# Emb
+EL[37] <- 52.5 # Bapl
+
+# Phy
+EL[4] <- 13 # Arja
+EL[c(6,7)] <- 2.5 # Stli Stlu
+EL[c(9, 10)] <- 14 # Dero Maca
+EL[11] <- 26 # Leye
+
+EL[5] <- EL[4] - EL[6] # Arja Stli Stlu
+EL[8] <- EL[11] - EL[9] # Leye Maca Dero
+EL[3] <- EL[11] - EL[4] # Leye Maca Dero Arja Stli Stlu
+
+# Mor
+EL[c(17, 18)] <- 13 # Ptpe Ptda
+EL[15] <- 15 # Ptpa
+EL[13] <- 26.5 # Mome
+
+EL[16] <- EL[15] - EL[17] # Ptpe Ptda Ptpa
+EL[14] <- EL[13] - EL[15] # Ptpe Ptda Ptpa Mome
+
+# Ves
+EL[c(22, 23)] <- 20 # Anpa Pihe
+EL[c(24, 25)] <- 39 # Epfu Idph
+EL[c(28, 29, 30)] <- 8 # Laxa Labl Laci
+EL[c(32,33)] <- 15 # Myyu Myvo
+
+EL[27] <- 29 - EL[28] # Myyu Myvo Laxa Labl Laci
+EL[31] <- 29 - EL[32] # Laxa Labl Laci Myyu Myvo
+EL[21] <- EL[24] - EL[22] # Anpa Pihe Epfu Idph
+EL[26] <- EL[24] - (EL[27] + EL[28]) # Anpa Pihe Epfu Idph # Myyu Myvo Laxa Labl Laci
+
+# Mol
+EL[c(35, 36)] <- 36 # Nyfe Tabr
+
+# Chiroptera
+EL[2] <- 28.5 - EL[11] # Phy Mor
+EL[12] <- 28.5 - EL[13] # Mor Phy
+EL[20] <- 49.5 - EL[24] # Ves Mol
+EL[34] <- 49.5 - EL[35] # Mol Ves
+EL[19] <- EL[37] - (EL[20] + EL[21] + EL[22]) # Emp Ves Mol
+EL[1] <- EL[37] - (EL[2] + EL[11]) # Emp Ves Mol Phy Mor
+
+
+super_tree$edge.length <- EL
+
+remove(EL, super_tips)
+```
+
+```{r data}
+order <- super_tree %>% 
+  fortify %>% 
+  subset(isTip) %>% 
+  with(label[order(y, decreasing=T)])
+
+df <- readRDS('preprocessed_calls.RDS') %>% 
+  select(bat, species, family, full) %>% 
+  mutate(species = factor(species, levels = rev(order)))
+
+t <- seq(from = 0, to = 1, length.out = 100) %>% 
+  extract(c(F, T))
+
+f <- seq(from = 0, to = 250, length.out = 257) %>% 
+  extract(. > 9 & . < 212) %>% 
+  extract(c(F, T))
+
+remove(order)
+```
+
+```{r plot phylogeny}
+plot_a <- ggtree(super_tree) +
+  geom_tiplab(hjust = 0.5, offset = 2) +
+  theme_tree2() +
+  theme(plot.margin = margin(0.4, 0, 0.1, 0, "cm")) +
+  labs(
+    title = 'Bat Phylogenetic Tree',
+    x = 'Evolutionary Time'
+  )
+
+plot_b <- df %>% 
+  group_by(species) %>% 
+  summarise(Calls = length(bat), Bats = bat %>% unique %>% length) %>% 
+  reshape2::melt(measure.vars = c('Calls', 'Bats')) %>% 
+  ggplot() +
+  geom_col(aes(x = species, y = value, fill = variable), position = 'dodge') +
+  coord_flip() +
+  labs(
+    y = 'Count',
+    x = 'Species',
+    title = 'Distribution of Calls and Bats\nwithin Call Dataset',
+    fill = ''
+  )
+```
+
+```{r render phylogeny plot, fig.cap = "Phylogenetic Tree and Dataset Structure"}
+gridExtra::grid.arrange(plot_a, plot_b, ncol = 2)
+remove(plot_a, plot_b)
+```
+
+```{r bootstrapped sample}
+temp <- df %>% 
+  group_by(bat) %>% 
+  sample_n(1) %>% 
+  ungroup %>% 
+  group_by(species) %>% 
+  sample_n(4) %>% 
+  ungroup
+
+boot_mean <- df %>% 
+  group_by(species) %>% 
+  summarise(family = unique(family)) %>% 
+  ungroup %>% 
+  cbind(
+    check <- temp %>%
+      use_series(full) %>% 
+      unlist %>% 
+      array(dim = c(104*50, temp %>% nrow)) %>% 
+      apply(1, function(x) tapply(x, temp %>% use_series(species), mean))
+  ) %>% 
+  group_by(species, family) %>% 
+  nest %>%
+  mutate(full = map(data, function(x) x %>% unlist %>% array(dim = c(104,50)))) %>% 
+  select(-data) %>% 
+  ungroup
+
+for(i in 1:24){
+  temp <- df %>% 
+    group_by(bat) %>% 
+    sample_n(1) %>% 
+    ungroup %>% 
+    group_by(species) %>% 
+    sample_n(4) %>% 
+    ungroup
+  
+  temp_mean <- df %>% 
+  group_by(species) %>% 
+  summarise(family = unique(family)) %>% 
+  ungroup %>% 
+  cbind(
+    check <- temp %>%
+      use_series(full) %>% 
+      unlist %>% 
+      array(dim = c(104*50, temp %>% nrow)) %>% 
+      apply(1, function(x) tapply(x, temp %>% use_series(species), mean))
+  ) %>% 
+  group_by(species, family) %>% 
+  nest %>%
+  mutate(full = map(data, function(x) x %>% unlist %>% array(dim = c(104,50)))) %>% 
+  select(-data) %>% 
+  ungroup
+  
+  boot_mean <- rbind(boot_mean, temp_mean)
+  remove(temp, temp_mean)
+}
+
+boot_mean <- boot_mean %>% 
+  arrange(species)
+```
+
+# Implementation amd Results
+
+The implementation of this model for the evolution relies on preprocessing the call recordings as set out by @pigoli2015analysis and obtaining smooth spectrogram surfaces. This preprocessing was performed in @grant2008cvx. All subsequent analysis was performed in @r2017team.
+
+
+# Evolutionary Features
+
+The model for evolution relies on the identification of an appropriate set of deterministic basis functions which can be thought of as evolutionary features. Rather than specifying these a priori, they can be inferred from the data. Assuming that $K$, the kernel over the trait space, is indeed a degenerate Mercer kernel, then a Principal Components Analysis of the spectrogram surfaces will yeild an appropriate set of features. It may also be of interest to consider features identified by an Independent Components Analysis and VARIMAX.
+
+# Latent Gaussian Processes for Phylogenetic Inference
+
+## Gaussian Processes Intro
+
+* Bayesian method
+
+* Model observation $y$ as a function over a input space $x$
+
+* Non parametric method
+
+* Define only a mean function and covariance kernel
+
+Gaussian processes (GP) constitute a broad family of Bayesian learning methods based on the assumption that the function mapping a set of inputs to a set of outputs follows a joint Gaussian distribution. GPs have been successfully applied to both supervised and unsupervised learning problems. Here we consider Latent Gaussian processes and how they may be aplied to the problem of phylogenetic inference, particularly with respect to function-valued traits.
+
+In general terms, we consider the dataset $\mathcal{D} = \{\mathbf{x}_n, \mathbf{y}_n \}_{n = 1}^N$ where $\mathbf{x_n}$ is a D-dimensional input vector and $\mathbf{y}_n$ is the corresponding P-dimensional output vector. Our aim is to find some mapping of $\mathbf{x}$ to $\mathbf{y}$, which will allow predictions for some unobserved input-output pair $\{\mathbf{x}_*, \mathbf{y}_* \}$.
+
+
+
+and this can be done by assuming  as a function of $\mathbf{x}$ and this can be done by assuming  
+
+More formally, a Gaussian process is a collection of random variables, any finite number of which have a joint Gaussian distribution. A GP is fully described by it's mean, usually assumed to be 0 with no loss of generality, and covariance function 
+
+
+
+Given a dataset $\mathcal{D} = \{\mathbf{x}_n, \mathbf{y}_n \}_{n = 1}^N$ where $\mathbf{x_n} \in \mathcal{X}$ is a D-dimensional input vector and $\mathbf{y}_n$ is a P-dimensional output.
+
+* What is a GP?
+
+* What is a latent GP?
+
+* How do latent GPs apply to phylogenetic inference
+
+---
+
+# References
