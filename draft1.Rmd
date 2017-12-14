@@ -295,14 +295,270 @@ boot_mean <- boot_mean %>%
   arrange(species)
 ```
 
-# Implementation amd Results
+```{r bootstrapped sample tree}
+n_samples <- 25
+boot_tree <- super_tree
 
-The implementation of this model for the evolution relies on preprocessing the call recordings as set out by @pigoli2015analysis and obtaining smooth spectrogram surfaces. This preprocessing was performed in @grant2008cvx. All subsequent analysis was performed in @r2017team.
+for(i in super_tree %>% use_series(tip.label)){
+  individuals <- stree(n_samples)
+  individuals$edge.length <- rep(0, n_samples)
+  individuals$tip.label <- rep(i, n_samples)
+  
+  boot_tree <- bind.tree(boot_tree, individuals, which(boot_tree$tip.label == i))
+}
+
+rm(individuals, n_samples)
+```
+
+# Implementation and Results
+
+The implementation of this model for the evolution relies on preprocessing the call recordings as set out by @pigoli2015analysis and obtaining smooth spectrogram surfaces. This preprocessing was performed in \textsc{Matlab}. All subsequent analysis was performed in \textsc{R} [@r2017team].
 
 
-# Evolutionary Features
+## Evolutionary Features
 
-The model for evolution relies on the identification of an appropriate set of deterministic basis functions which can be thought of as evolutionary features. Rather than specifying these a priori, they can be inferred from the data. Assuming that $K$, the kernel over the trait space, is indeed a degenerate Mercer kernel, then a Principal Components Analysis of the spectrogram surfaces will yeild an appropriate set of features. It may also be of interest to consider features identified by an Independent Components Analysis and VARIMAX.
+The model for evolution relies on the identification of an appropriate set of deterministic basis functions which can be thought of as evolutionary features. Rather than specifying these a priori, they can be inferred from the data. Assuming that $K$, the kernel over the trait space, is indeed a degenerate Mercer kernel, then a Principal Components Analysis of the spectrogram surfaces will yeild an appropriate set of features. It may also be of interest to consider features identified by an Independent Components Analysis and VARIMAX. Some exploration of the data identified 10 Varimax or Independent Components to be of particular interest.
+
+```{r pca}
+pca <- boot_mean %>% 
+  use_series(full) %>%
+  unlist %>% 
+  array(dim = c(50*104, df %>% nrow)) %>% 
+  extract(, sample.int(df %>% nrow)) %>% 
+  t %>% 
+  prcomp
+
+n <- 10
+p_basis <- pca %>% use_series(rotation) %>% extract(, 1:n) 
+```
+
+```{r ica}
+ica <- p_basis %>% t %>% cubica34
+
+i_basis <- ica %>% use_series(y) %>% t %>% divide_by(5200 %>% sqrt)
+```
+
+```{r varimax}
+vari <- p_basis %>% varimax
+
+v_basis <- vari %>% use_series(loadings)
+```
+
+```{r plot feature}
+x <- 2
+expand.grid(freq = f, time = t) %>% 
+  mutate(spec = v_basis %>% extract(,x)) %>% 
+  ggplot() +
+  geom_raster(aes(x = time, y = freq, fill = spec), show.legend = F) +
+  viridis::scale_fill_viridis(option = 'D') +
+  theme_classic() +
+  scale_x_continuous(breaks = c(0, 0.5, 1)) +
+  labs(
+    title = 'Evolutionary Feature' %>% paste(x, .),
+    x = 'Time (Absolute)',
+    y = 'Frequency (kHz)'
+  )
+```
+
+
+Each of these sets of basis functions result in a set of weights for the phylogenetic Gaussian process.
+
+```{r centre spectrograms}
+boot_mean <- boot_mean %>% 
+  mutate(centred = map(full, function(x) x %>% subtract(pca %>% use_series(center))), sample = factor(1:nrow(boot_mean)))
+
+remove(ica, vari)
+```
+
+```{r pc scores}
+p_scores <- boot_mean %>% 
+  select(species, family) %>% 
+  cbind(p_basis %>% t %>% 
+    multiply_by_matrix( boot_mean %>%
+        select(centred) %>%
+        unlist %>% 
+        array(dim = c(104*50, boot_mean %>% nrow))
+    ) %>% 
+    divide_by(520) %>% 
+    t %>% 
+    as_tibble
+  )
+```
+
+```{r ic scores}
+i_scores <- boot_mean %>% 
+  select(species, family) %>% 
+  cbind(i_basis %>% t %>% 
+    multiply_by_matrix( boot_mean %>%
+        select(centred) %>%
+        unlist %>% 
+        array(dim = c(104*50, boot_mean %>% nrow))
+    ) %>% 
+    divide_by(520) %>% 
+    t %>% 
+    as_tibble
+  )
+```
+
+```{r vari scores}
+v_scores <- boot_mean %>% 
+  select(species, family) %>% 
+  cbind(v_basis %>% t %>% 
+    multiply_by_matrix( boot_mean %>%
+        select(centred) %>%
+        unlist %>% 
+        array(dim = c(104*50, boot_mean %>% nrow))
+    ) %>% 
+    divide_by(520) %>% 
+    t %>% 
+    as_tibble
+  )
+```
+
+```{r, fig.cap = "Distribution of component scores for a selected Principal component loading, separated out by species."}
+p_scores %>% 
+  ggplot() +
+  geom_density_ridges(aes(x = PC1, y = species, color = family, fill = family)) +
+  scale_colour_brewer(palette = "Dark2") +
+  scale_fill_brewer(palette = "Dark2") +
+  labs(
+    title = 'Principal Component Scores',
+    y = 'Species'
+  )
+```
+## Reconstruction Error
+
+In order to measure the accuracy of any reconstructed spectrograms, a reconstruction error metric is required. The Mean Absolute Error of the reconstruction is used.
+
+This is first used to compare the original surfaces with those projected into the component space.
+
+```{r pc reconstruction}
+p_recon <- p_scores %>% 
+  select(starts_with('PC')) %>% 
+  multiply_by(520) %>%
+  as.matrix %>% 
+  multiply_by_matrix(p_basis %>% t) %>% 
+  cbind(boot_mean %>% select(sample, species, family), .) %>% 
+  group_by(sample, species, family) %>% 
+  nest %>% 
+  mutate(centred = map(data, function(x) x %>% unlist %>% array(dim = c(104,50)))) %>% 
+  select(-data) %>% 
+  ungroup %>% 
+  mutate(full = map(centred, function(x) x %>% add(pca %>% use_series(center))))
+
+mae <- function(x, y){
+  x %>% subtract(y) %>% abs %>% mean
+}
+
+p_recon <- p_recon %>% 
+  mutate(mae = NA)
+
+for(i in p_recon %>% nrow %>% seq.int){
+  p_recon[i, 'mae'] <- mae(p_recon[i, 'full'][[1]][[1]], boot_mean[i, 'full'][[1]][[1]])
+}
+
+p_recon %>% 
+  ggplot() +
+  geom_density_ridges(aes(x = mae, y = species, color = family, fill = family)) +
+  scale_colour_brewer(palette = "Dark2") +
+  scale_fill_brewer(palette = "Dark2") +
+  labs(
+    title = 'Principal Component Reconstruction Errors',
+    y = 'Species'
+  )
+```
+
+```{r ic reconstruction}
+i_recon <- i_scores %>% 
+  select(starts_with('V')) %>% 
+  multiply_by(520) %>%
+  as.matrix %>% 
+  multiply_by_matrix(i_basis %>% t) %>% 
+  cbind(boot_mean %>% select(sample, species, family), .) %>% 
+  group_by(sample, species, family) %>% 
+  nest %>% 
+  mutate(centred = map(data, function(x) x %>% unlist %>% array(dim = c(104,50)))) %>% 
+  select(-data) %>% 
+  ungroup %>% 
+  mutate(full = map(centred, function(x) x %>% add(pca %>% use_series(center))))
+
+i_recon <- i_recon %>% 
+  mutate(mae = NA)
+
+for(i in i_recon %>% nrow %>% seq.int){
+  i_recon[i, 'mae'] <- mae(i_recon[i, 'full'][[1]][[1]], boot_mean[i, 'full'][[1]][[1]])
+}
+
+i_recon %>% 
+  ggplot() +
+  geom_density_ridges(aes(x = mae, y = species, color = family, fill = family)) +
+  scale_colour_brewer(palette = "Dark2") +
+  scale_fill_brewer(palette = "Dark2") +
+  labs(
+    title = 'Independent Component Reconstruction Errors',
+    y = 'Species'
+  )
+```
+
+```{r varimax reconstruction}
+v_recon <- v_scores %>% 
+  select(starts_with('PC')) %>% 
+  multiply_by(520) %>%
+  as.matrix %>% 
+  multiply_by_matrix(v_basis %>% t) %>% 
+  cbind(boot_mean %>% select(sample, species, family), .) %>% 
+  group_by(sample, species, family) %>% 
+  nest %>% 
+  mutate(centred = map(data, function(x) x %>% unlist %>% array(dim = c(104,50)))) %>% 
+  select(-data) %>% 
+  ungroup %>% 
+  mutate(full = map(centred, function(x) x %>% add(pca %>% use_series(center))))
+
+v_recon <- v_recon %>% 
+  mutate(mae = NA)
+
+for(i in v_recon %>% nrow %>% seq.int){
+  v_recon[i, 'mae'] <- mae(v_recon[i, 'full'][[1]][[1]], boot_mean[i, 'full'][[1]][[1]])
+}
+
+v_recon %>% 
+  ggplot() +
+  geom_density_ridges(aes(x = mae, y = species, color = family, fill = family)) +
+  scale_colour_brewer(palette = "Dark2") +
+  scale_fill_brewer(palette = "Dark2") +
+  labs(
+    title = 'Varimax Component Reconstruction Errors',
+    y = 'Species'
+  )
+```
+
+These reconstructions are best investigated visually but, failing that the error metric gives a benchmark against which we can compare the LOSO validation.
+
+## Process Hyperparameters
+
+Obtaining the posterior predictive distribution of the PGP relies on selecting appropriate hyperparameters. Type II MLE is used to estimate the process hyperparameters. These are as follows.
+
+## LOSO Reconstruction Validation
+
+Typically in machine learning predictions are validated against some held out data, however, in the context of Ancestral Reconstruction this is typically impossible as that which is being predicted no longer exists. It is possible however to validate the evolutionary process against extant species and so a Leave-One-Species-Out Cross Validation of posterior predictive distributions is performed.
+
+## Ancestral Reconstruction
+
+Having explored the accuracy of the models predictions we now consider the problem of Ancestral Reconstruction, that is posterior distributions over ancestral spectrogram surfaces.
+
+## Time Domain Representation of Reconstructed Spectrograms
+
+Given a spectrogram surface, it is possible to invert the spectrogram to approximate the time domain signal which produced the spectrogram. This time domain signal can be played back, allowing us to listen to ancestral bats.
+
+Possible link to interactive website for results.
+
+# Discussion
+
+Interpretation of results.
+
+To build on this, link to LVGP, phylogenetic inference not on Functions, characteristics, dependant basis/features. 
+
+Tree Inference.
 
 # Latent Gaussian Processes for Phylogenetic Inference
 
