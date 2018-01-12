@@ -1,0 +1,29 @@
+\relax 
+\providecommand\hyper@newdestlabel[2]{}
+\providecommand\HyperFirstAtBeginDocument{\AtBeginDocument}
+\HyperFirstAtBeginDocument{\ifx\hyper@anchor\@undefined
+\global\let\oldcontentsline\contentsline
+\gdef\contentsline#1#2#3#4{\oldcontentsline{#1}{#2}{#3}}
+\global\let\oldnewlabel\newlabel
+\gdef\newlabel#1#2{\newlabelxx{#1}#2}
+\gdef\newlabelxx#1#2#3#4#5#6{\oldnewlabel{#1}{{#2}{#3}}}
+\AtEndDocument{\ifx\hyper@anchor\@undefined
+\let\contentsline\oldcontentsline
+\let\newlabel\oldnewlabel
+\fi}
+\fi}
+\global\let\hyper@last\relax 
+\gdef\HyperFirstAtBeginDocument#1{#1}
+\providecommand\HyField@AuxAddToFields[1]{}
+\providecommand\HyField@AuxAddToCoFields[2]{}
+\@writefile{toc}{\contentsline {section}{Introduction}{1}{section*.1}}
+\newlabel{introduction}{{}{1}{Introduction}{section*.1}{}}
+\@writefile{toc}{\contentsline {section}{The Current Model}{1}{section*.2}}
+\newlabel{the-current-model}{{}{1}{The Current Model}{section*.2}{}}
+\@writefile{toc}{\contentsline {section}{A Joint model for spectrogram surfaces}{1}{section*.3}}
+\newlabel{a-joint-model-for-spectrogram-surfaces}{{}{1}{A Joint model for spectrogram surfaces}{section*.3}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces A randomly selected bat call from the species Arja alongside it's corresponding smoothed surface representation. The smooth surface is obtained by taking the call spectrogram and treating it as a functional data object. The spectrogram is first smoothed by a robust 2-D spline smoother, then mapped to an absolute time scale and registered in time by a pairwise surface synchronisation, and finally restricted to the 9 - 212 kHz frequency spectrum.}}{2}{figure.1}}
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces Tree of assumed evolutionary relationships between Bat Species. This phylogeny was transcribed from a recent bat super tree and shoud represent a `best guess' for the evolutionary relationships between bat species based on the fossil record alongside morphological and molecular studies of evolutionary relationships.}}{3}{figure.2}}
+\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces Ancestral spectrogram and acoustic approximation for the common ancestor of Arja, Stli, Stlu. The reconstruction is given by the MAP estimates for the weight of each evolutionary feature at the node. In this case, evolutionary features were identified by a PCA of the smoothed spectrogram surfaces. The acoustic reconstruction was performed assuming a call duration of approximately 4 ms}}{4}{figure.3}}
+\@writefile{lof}{\contentsline {figure}{\numberline {4}{\ignorespaces A Graphical model detailing the structure of the model for evolution used to produce reconstructions of ancestral bat echolocation calls. Let \(y_n\) be a random variable representing an echolocation call recording. \(S_n\) is the random variable representing the smoothed spectrogram surface given by \(y_n\). The Mexican bat call dataset provides \(N = 1816\) observations of these random variables. The process of transforming a call recording into a spectrogram surface was covered in my 9 month report. The model assumes that each \(S_n\) can be modelled by \(Q\) independent deterministic 'evolutionary features' denoted \(\phi _q\). In this case \(\phi _q\) is inferred by a Principal Components Analysis of \(\{S_n\}_{n = 1}^N\). The weight of each evolutionary feature in \(S_n\) is itself a random variable, where \(w_{nq}\) denotes the weight of \(\phi _q\) in \(S_n\). \(w_{nq}\) is assumed to behave as an Ornstein-Uhlenbeck Gaussian process for which the input space is the phylogeny \(\mathcal  {P}\). Each Gaussian process is defined by the deterministic hyperparameters \(\theta _q = [\gamma _q, \ell _q, \sigma _q]^\mathsf  {T}\) which are inferred from the data by Type II maximum likelihood estimation over the observed weights. The phylogeny \(\mathcal  {P}\) is also assumed to be deterministic in this model and is shown in Figure 2. Ancestral reconstruction is performed by making a prediction for the feature weights, denoted \(\mathaccentV {hat}05E{w}\), at some point on \(\mathcal  {P}\). Applying these weights to the evolutionary features produces the ancestral call surface which in turn provides an estimate for the ancestral call.}}{5}{figure.4}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5}{\ignorespaces A proposed extension to the model for the evolution a bat echolocation calls presented in Figure 4. This model includes a noise process over the call surface, which would allow the calculation of the model evidence. This in turn would facilitate model selection for various sets of evolutionary features, phylogenies, and Ornstein-Uhlenbeck process hyperparameters.}}{5}{figure.5}}

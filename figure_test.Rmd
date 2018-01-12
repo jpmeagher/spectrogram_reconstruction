@@ -1,0 +1,216 @@
+---
+title: "Figure Check"
+author: "J.P. Meagher"
+date: "9 January 2018"
+output:
+  pdf_document: 
+    keep_tex: yes
+header-includes:
+- \usepackage{tikz}
+- \usepackage{pgfplots}
+- \usepackage{float}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, message = F, warning = F, cache = T, fig.pos = 'H')
+```
+
+```{r packages}
+library(signal) # Produce Spectrogram
+library(tidyverse) # see http://r4ds.had.co.nz/
+library(magrittr) # pipe operator and alaises
+library(batwork) # my own package, long form call data
+library(sdsBAT) # my own package, tree data and functions for ancestral reconstruction
+library(ape) # Analyses of Phylogenetics and Evolution
+library(RColorBrewer) # for pretty pictures
+library(ggridges) # Joy plots
+library(ggtree) ## ggplot for phylogenetic trees
+library(audio)
+```
+
+```{r phylogenetic tree}
+super_tips <- 
+"(
+  (
+    ((Arja, (Stli, Stlu)), (Dero, Maca), Leye),
+    (Mome, (Ptpa, (Ptda, Ptpe)))
+  ), 
+  (
+    ((Anpa, Pihe), Epfu, Idph, ((Laci, Labl, Laxa), (Myvo, Myyu))), 
+    (Tabr, Nyfe)
+  ), Bapl);"
+
+super_tree <- read.tree(text = super_tips)
+
+EL <- rep(NA, nrow(super_tree$edge))
+
+# Emb
+EL[37] <- 52.5 # Bapl
+
+# Phy
+EL[4] <- 13 # Arja
+EL[c(6,7)] <- 2.5 # Stli Stlu
+EL[c(9, 10)] <- 14 # Dero Maca
+EL[11] <- 26 # Leye
+
+EL[5] <- EL[4] - EL[6] # Arja Stli Stlu
+EL[8] <- EL[11] - EL[9] # Leye Maca Dero
+EL[3] <- EL[11] - EL[4] # Leye Maca Dero Arja Stli Stlu
+
+# Mor
+EL[c(17, 18)] <- 13 # Ptpe Ptda
+EL[15] <- 15 # Ptpa
+EL[13] <- 26.5 # Mome
+
+EL[16] <- EL[15] - EL[17] # Ptpe Ptda Ptpa
+EL[14] <- EL[13] - EL[15] # Ptpe Ptda Ptpa Mome
+
+# Ves
+EL[c(22, 23)] <- 20 # Anpa Pihe
+EL[c(24, 25)] <- 39 # Epfu Idph
+EL[c(28, 29, 30)] <- 8 # Laxa Labl Laci
+EL[c(32,33)] <- 15 # Myyu Myvo
+
+EL[27] <- 29 - EL[28] # Myyu Myvo Laxa Labl Laci
+EL[31] <- 29 - EL[32] # Laxa Labl Laci Myyu Myvo
+EL[21] <- EL[24] - EL[22] # Anpa Pihe Epfu Idph
+EL[26] <- EL[24] - (EL[27] + EL[28]) # Anpa Pihe Epfu Idph # Myyu Myvo Laxa Labl Laci
+
+# Mol
+EL[c(35, 36)] <- 36 # Nyfe Tabr
+
+# Chiroptera
+EL[2] <- 28.5 - EL[11] # Phy Mor
+EL[12] <- 28.5 - EL[13] # Mor Phy
+EL[20] <- 49.5 - EL[24] # Ves Mol
+EL[34] <- 49.5 - EL[35] # Mol Ves
+EL[19] <- EL[37] - (EL[20] + EL[21] + EL[22]) # Emp Ves Mol
+EL[1] <- EL[37] - (EL[2] + EL[11]) # Emp Ves Mol Phy Mor
+
+super_tree$edge.length <- EL
+
+rescaleTree <- function(tree,scale){
+  tree$edge.length <- tree$edge.length/max(phytools::nodeHeights(tree)[,2])*scale
+  return(tree)
+}
+
+super_tree <- rescaleTree(super_tree, 1)
+
+remove(EL, super_tips)
+```
+
+```{r data}
+sp <- super_tree$tip.label
+
+df <- readRDS('preprocessed_calls.RDS') %>% 
+  select(bat, species, family, calls, full) %>% 
+  mutate(species = factor(species, levels = sp))
+
+t <- seq(from = 0, to = 1, length.out = 100) %>% 
+  extract(c(F, T))
+
+temp_f <- seq(from = 0, to = 250, length.out = 257)
+f <- temp_f %>% 
+  extract(temp_f > 9 & temp_f < 212) %>% 
+  extract(c(F, T))
+
+remove(sp, temp_f)
+```
+
+# Introduction
+
+We are given a dataset of $N$ bat echolocation call recordings denoted $\{y_n\}_{n = 1}^N$. This recording is then processed to produce a set of smooth surfaces over a regular grid denoted $\{\tilde{S}_n\}_{n=1}^{N}$. This surface is produced by smoothing the call spectrogram and mapping it to a regular grid over relevant frequencies and an absolute time scale.
+
+```{r recording figure, fig.cap = "A randomly selected bat call from the species Arja alongside it's corresponding smoothed surface representation.", fig.height = 3, fig.pos = "htbp"}
+test_call <- df %>% 
+  filter(species == 'Arja') %>% 
+  sample_n(1)
+
+#play(test_call %>% select(calls) %>% unlist %>%  as.vector, rate = 50000)
+
+plot_a <- test_call %>% select(calls) %>% unnest %>% 
+  transmute(
+    time = seq(from = 0, by = 1/500, length.out = calls %>% length), 
+    call = calls
+    ) %>% 
+  ggplot() +
+  geom_line(aes(x = time, y = call)) +
+  theme_classic() +
+  labs(
+    title = 'Call\nTest Recording' %>% paste(test_call$species, test_call$bat, .),
+    x = 'Time (ms)',
+    y = 'Amplitude'
+  )
+
+plot_b <- expand.grid(freq = f, time = t) %>% 
+  mutate(spec = test_call %>% use_series(full) %>% unlist) %>% 
+  ggplot() +
+  geom_raster(aes(x = time, y = freq, fill = spec), show.legend = F) +
+  viridis::scale_fill_viridis(option = 'D') +
+  theme_classic() +
+  scale_x_continuous(breaks = c(0, 0.5, 1)) +
+  labs(
+    title = 'Call\nPreprocessed Spectrogram' %>% paste(test_call$species, test_call$bat, .),
+    x = 'Time (Absolute)',
+    y = 'Frequency (kHz)'
+  )
+
+gridExtra::grid.arrange(plot_a, plot_b, ncol=2)
+#cowplot::plot_grid(plot_a, plot_b, labels=c('A', 'B'))
+remove(plot_a, plot_b)
+```
+
+Along with this dataset we are given a phylogeny defining the evolutionary relationships between the species of bat.
+
+```{r phylogeny figure, fig.cap = "Tree of assumed evolutionary relationships between Bat Species"}
+node_lab <-  c(super_tree$tip.label, 23:38)
+ggtree(super_tree) +
+  geom_tiplab(hjust = 0.5, offset = 0.05) +
+  geom_label2(aes(subset =! isTip, label = node_lab)) +
+  labs(
+    title = 'Bat Phylogenetic Tree'
+  )
+```
+
+
+
+Thus, for the dataset of Mexican Bat echolocation calls and the given Phylogeny, Ancestral Reconstruction has been performed.
+
+# The Current Model
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance = 2cm]
+
+  \tikzstyle{rv} = [circle, draw]
+	\tikzstyle{plate} = [node distance = 1.25cm]
+	
+	\node[rv, fill = gray!50, label = above left:$y_n$] (y) {};
+	\node[rv, fill = gray!50, label = above left:$S_n$, right of = y] (S) {}
+	edge[->] (y);
+	
+	\node[plate, above right of = S] (ntop) {};
+	\node[plate, below left of = y, label = 5:$N$, ] (nbot) {};
+	\draw[rounded corners] (ntop) rectangle (nbot) ;
+	
+	\node[rv, right of=S, label = above right:$\mathbf{w}$] (w) {}
+	edge[->] (S);
+	\node[above of = w, label = above right:$\Theta$] (theta) {\textbullet}
+	edge [->] (w);
+	\node[right of = w, label = above right:$\mathcal{P}$] (P) {\textbullet}
+	edge [->] (w);
+	\node[below of = w, label = above right:$\Phi$] (phi) {\textbullet}
+	edge [->] (S);
+	
+	\node[plate, above right of = theta] (qtop) {};
+	\node[plate, below left of = phi, label = 5:$Q$, ] (qbot) {};
+	\draw[rounded corners] (qtop) rectangle (qbot);
+	
+	\node[rv, below of=S, label = below left:$\hat{S}$] (hatS) {}
+	edge[<-] (w)
+	edge[<-] (phi);
+	\node[rv, below of=y, label = below left:$\hat{y}$] (haty) {}
+	edge[<-] (hatS);
+\end{tikzpicture}
+\caption{A Graphical model detailing the structure of the model for evolution used to produce reconstructions of ancestral bat echolocation calls.}
+\end{figure}

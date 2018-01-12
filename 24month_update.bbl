@@ -1,0 +1,116 @@
+\begin{thebibliography}{10}
+
+\bibitem{collen2012evolution}
+AL~Collen.
+\newblock {\em The evolution of echolocation in bats: a comparative approach}.
+\newblock PhD thesis, UCL (University College London), 2012.
+
+\bibitem{damoulas2010bayesian}
+Theodoros Damoulas, Samuel Henry, Andrew Farnsworth, Michael Lanzone, and Carla
+  Gomes.
+\newblock Bayesian classification of flight calls with a novel dynamic time
+  warping kernel.
+\newblock In {\em Machine Learning and Applications (ICMLA), 2010 Ninth
+  International Conference on}, pages 424--429. IEEE, 2010.
+
+\bibitem{dicecco2013multi}
+John DiCecco, Jason~E Gaudette, and James~A Simmons.
+\newblock Multi-component separation and analysis of bat echolocation calls.
+\newblock {\em The Journal of the Acoustical Society of America},
+  133(1):538--546, 2013.
+
+\bibitem{elliot2014inferring}
+Michael~G Elliot and Arne~{\O} Mooers.
+\newblock Inferring ancestral states without assuming neutrality or gradualism
+  using a stable model of continuous character evolution.
+\newblock {\em BMC evolutionary biology}, 14(1):226, 2014.
+
+\bibitem{garcia2010robust}
+Damien Garcia.
+\newblock Robust smoothing of gridded data in one and higher dimensions with
+  missing values.
+\newblock {\em Computational statistics \& data analysis}, 54(4):1167--1178,
+  2010.
+
+\bibitem{hadjipantelis2013function}
+Pantelis~Z Hadjipantelis, Nick~S Jones, John Moriarty, David~A Springate, and
+  Christopher~G Knight.
+\newblock Function-valued traits in evolution.
+\newblock {\em Journal of The Royal Society Interface}, 10(82):20121032, 2013.
+
+\bibitem{hansen1997stabilizing}
+Thomas~F Hansen.
+\newblock Stabilizing selection and the comparative analysis of adaptation.
+\newblock {\em Evolution}, pages 1341--1351, 1997.
+
+\bibitem{jones2013evolutionary}
+Nick~S Jones and John Moriarty.
+\newblock Evolutionary inference for function-valued traits: Gaussian process
+  regression on phylogenies.
+\newblock {\em Journal of The Royal Society Interface}, 10(78):20120616, 2013.
+
+\bibitem{krauth2016autogp}
+Karl Krauth, Edwin~V Bonilla, Kurt Cutajar, and Maurizio Filippone.
+\newblock Autogp: Exploring the capabilities and limitations of gaussian
+  process models.
+\newblock {\em arXiv preprint arXiv:1610.05392}, 2016.
+
+\bibitem{lande1976natural}
+Russell Lande.
+\newblock Natural selection and random genetic drift in phenotypic evolution.
+\newblock {\em Evolution}, pages 314--334, 1976.
+
+\bibitem{li2016review}
+Ping Li and Songcan Chen.
+\newblock A review on gaussian process latent variable models.
+\newblock {\em CAAI Transactions on Intelligence Technology}, 1(4):366--376,
+  2016.
+
+\bibitem{meagher2017pgp}
+Joseph Meagher, Theodorus Damoulas, Kate Jones, and Mark Girolami.
+\newblock Phylogenetic gaussian processes for the ancestral reconstruction of
+  bat echolocation calls.
+\newblock 2017.
+
+\bibitem{meyer2005up}
+Karin Meyer and Mark Kirkpatrick.
+\newblock Up hill, down dale: quantitative genetics of curvaceous traits.
+\newblock {\em Philosophical Transactions of the Royal Society of London B:
+  Biological Sciences}, 360(1459):1443--1455, 2005.
+
+\bibitem{pigoli2015analysis}
+Davide Pigoli, Pantelis~Z Hadjipantelis, John~S Coleman, and John~AD Aston.
+\newblock The analysis of acoustic phonetic data: exploring differences in the
+  spoken romance languages.
+\newblock {\em arXiv preprint arXiv:1507.07587}, 2015.
+
+\bibitem{rasmussen2006gaussian}
+Carl~Edward Rasmussen.
+\newblock Gaussian processes for machine learning.
+\newblock 2006.
+
+\bibitem{shah2014student}
+Amar Shah, Andrew Wilson, and Zoubin Ghahramani.
+\newblock Student-t processes as alternatives to gaussian processes.
+\newblock In {\em Artificial Intelligence and Statistics}, pages 877--885,
+  2014.
+
+\bibitem{tang2008pairwise}
+Rong Tang and Hans-Georg M{\"u}ller.
+\newblock Pairwise curve synchronization for functional data.
+\newblock {\em Biometrika}, 95(4):875--889, 2008.
+
+\bibitem{tipping1999probabilistic}
+Michael~E Tipping and Christopher~M Bishop.
+\newblock Probabilistic principal component analysis.
+\newblock {\em Journal of the Royal Statistical Society: Series B (Statistical
+  Methodology)}, 61(3):611--622, 1999.
+
+\bibitem{zhu2007real}
+Xinglei Zhu, Gerald~T Beauregard, and Lonce~L Wyse.
+\newblock Real-time signal estimation from modified short-time fourier
+  transform magnitude spectra.
+\newblock {\em IEEE Transactions on Audio, Speech, and Language Processing},
+  15(5):1645--1653, 2007.
+
+\end{thebibliography}

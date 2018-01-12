@@ -1,0 +1,749 @@
+---
+title: "Presentation of Ancestral Reconstruction Results"
+author: "J.P. Meagher"
+date: "8 January 2018"
+output:
+  pdf_document: 
+    keep_tex: yes
+bibliography: bibliography.bib
+header-includes: 
+- \usepackage{tikz}
+- \usepackage{float}
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, message = F, warning = F, cache = T)
+```
+
+```{r packages}
+library(signal) # Produce Spectrogram
+library(tidyverse) # see http://r4ds.had.co.nz/
+library(magrittr) # pipe operator and alaises
+library(batwork) # my own package, long form call data
+library(sdsBAT) # my own package, tree data and functions for ancestral reconstruction
+library(ape) # Analyses of Phylogenetics and Evolution
+library(RColorBrewer) # for pretty pictures
+library(ggridges) # Joy plots
+library(ggtree) ## ggplot for phylogenetic trees
+library(audio)
+```
+
+```{r complex stft}
+complex_stft <- function(x, window_size = min(256, length(x)), 
+  window_function = hamming(window_size), step_size = ceiling(window_size/2)){
+  if (!is.numeric(x)) stop("'x' has to be a numeric.")
+  
+  if (length(window_size) > 1) stop("Cannot comput for multiple window sizes")
+  
+  if (length(x) > window_size) {
+    window_offset <- seq(1, length(x) - window_size, by = step_size)
+  }else{
+    window_offset <- 1
+    }
+  
+  sections <- matrix(nrow = window_size, ncol = length(window_offset))
+  for(i in seq_along(window_offset)){
+    sections[, i] <- 
+      x[window_offset[i]:(window_offset[i] + window_size - 1)]*window_function
+  }
+
+  stft <- mvfft(sections)
+  
+  return(stft)
+}
+```
+
+```{r full spectrum frequencies}
+full_spectrum_frequencies <- function(full_spectrum, fs = 500){
+  if(is.vector(full_spectrum)){
+    
+    n_freq <- length(full_spectrum)
+    
+  }else if(is.matrix(full_spectrum)){
+      
+    n_freq <- nrow(full_spectrum)
+    
+  }else{
+    
+      stop('full_spectrum is in incorrect format')
+  }
+  
+  
+  if(n_freq %% 2 == 1){
+    frequencies <- seq(from = 0, to = floor(n_freq/2), length.out = (n_freq + 1)/2)
+    frequencies <- c( frequencies, -rev( frequencies[ 2:((n_freq + 1)/2) ] ) )
+  }else{
+    frequencies <- seq(from = 0, to = n_freq/2, length.out = (n_freq/2) + 1)
+    frequencies <- c( frequencies, -rev( frequencies[ 2:(n_freq/2) ] ) )
+  }
+  
+  frequencies <- frequencies * (fs/ n_freq)
+  
+  return(frequencies)
+}
+```
+
+```{r stft time}
+stft_time <- function(stft, fs, step_size){
+  
+  if(!is.matrix(stft)){
+    stop('spectrum must be a matrix')
+  }
+  
+  window_offset <- seq(1, by = step_size, length.out = ncol(stft))
+  times <- window_offset / fs
+  
+  return(times)
+}
+```
+
+```{r rtisi-la}
+random_phase <- function(window_size){
+  if(window_size %% 2 == 1){
+    positive_frequencies <- runif((window_size + 1)/2, min = -pi, max = pi)
+    phase <- c( positive_frequencies, -rev( positive_frequencies[-1] ) )
+  }else{
+    positive_frequencies <- runif((window_size/2) + 1, min = -pi, max = pi)
+    phase <- c( positive_frequencies, -rev( positive_frequencies[ 2:(window_size/2) ] ) )
+  }
+  
+  return(phase)
+}
+
+phase_from_partial <- function(partial_signal, partial_scaling, 
+  window_function = hamming(length(partial_signal))){
+  
+  if(!is.vector(partial_signal)) stop('partial_signal must be a vector')
+  if(!is.vector(partial_scaling)) stop('partial_scaling must be a vector')
+  if(length(partial_signal) != length(partial_scaling)){
+    stop('partial_signal and partial_scaling must be the same length')
+  }
+  
+  scaled_signal <- partial_signal / partial_scaling
+  scaled_signal[is.nan(scaled_signal)] <-  0
+  
+  partial_fft <- fft(window_function*scaled_signal)
+  
+  phase <- atan2(Im(partial_fft), Re(partial_fft))
+}
+
+rtisi_la <- function(mag_stft, step_size, window_function = hamming(nrow(mag_stft)), 
+  iterations = 10, fft_normaliser = nrow(mag_stft)){
+  if(!is.matrix(mag_stft)) stop('mag_stft must be a matrix')
+  if(is.complex(mag_stft)) stop('mag_stft must be a real valued matrix')
+  
+  window_size <- nrow(mag_stft)
+  total_frames <- ncol(mag_stft)
+
+  committed_signal <- rep(0,  step_size*(total_frames - 1) + window_size)
+  committed_weight <- rep(0,  step_size*(total_frames - 1) + window_size)
+  
+  for(i in seq.int(total_frames)){
+    look_ahead <- min((window_size / step_size) - 1, total_frames - i)
+    in_frame_signal <- 
+      committed_signal[(i-1)*step_size + (1:(window_size + look_ahead*step_size))]
+    in_frame_weight <- 
+      committed_weight[(i-1)*step_size + (1:(window_size + look_ahead*step_size))]
+    
+    message('Initial Iteration')
+    
+    for(j in 0:look_ahead){
+      if(j == 0 & i == 1){
+        
+        message(paste('Generate a random initial phase for frame', 
+          i, 'of magnitude spectrum'))
+        initial_phase <- random_phase(window_size)
+        
+      }else 
+        if(j == 0 & i != 1){
+        
+        message(
+          paste(
+          'Committed signal used to generate inital phase from partial signal for frame', 
+            i
+            )
+          )
+        initial_phase <- phase_from_partial(
+          partial_signal = committed_signal[j*step_size + 1:window_size], 
+          partial_scaling = committed_weight[j*step_size + 1:window_size], 
+          window_function = window_function
+          )
+        
+      }else{
+
+        initial_phase <- phase_from_partial(
+          partial_signal = in_frame_signal[j*step_size + 1:window_size], 
+          partial_scaling =in_frame_weight[j*step_size + 1:window_size], 
+          window_function = window_function
+          )
+        
+      }
+      
+      in_frame_signal[j*step_size + 1:window_size] <- 
+        in_frame_signal[j*step_size + 1:window_size] + 
+        (Re(fft(mag_stft[, i + j]*exp((0+1i)*initial_phase), inverse = T)) / 
+            fft_normaliser)
+    
+      in_frame_weight[j*step_size + 1:window_size] <- 
+        in_frame_weight[j*step_size + 1:window_size] + 
+        window_function
+    }
+    
+    frame_i_estimate <- (in_frame_signal / in_frame_weight)[1:window_size]
+    
+    temp_stft <- complex_stft(frame_i_estimate, window_size = window_size, 
+      step_size = step_size)
+    
+    estimated_phase <- atan2(Im(temp_stft), Re(temp_stft))
+    
+    message(paste('Iteratively improving phase estimates for frame', i))
+    for(k in seq.int(iterations)){
+      in_frame_signal <- 
+        committed_signal[(i-1)*step_size + (1:(window_size + look_ahead*step_size))]
+      in_frame_weight <- 
+        committed_weight[(i-1)*step_size + (1:(window_size + look_ahead*step_size))]
+      
+      for(j in 0:look_ahead){
+        if(j == 0){
+          
+          initial_phase <- estimated_phase
+          
+        }else if(j > 0){
+          
+          initial_phase <- phase_from_partial(
+            partial_signal = in_frame_signal[j*step_size + 1:window_size], 
+            partial_scaling =in_frame_weight[j*step_size + 1:window_size], 
+            window_function = window_function)
+          
+        }
+        
+        in_frame_signal[j*step_size + 1:window_size] <- 
+          in_frame_signal[j*step_size + 1:window_size] + 
+          (Re(fft(mag_stft[, i + j]*exp((0+1i)*initial_phase), inverse = T)) / 
+              fft_normaliser)
+        
+        in_frame_weight[j*step_size + 1:window_size] <- 
+          in_frame_weight[j*step_size + 1:window_size] + 
+          window_function
+      }
+      
+      frame_i_estimate <- (in_frame_signal / in_frame_weight)[1:window_size]
+      
+      temp_stft <- complex_stft(frame_i_estimate, window_size = window_size, 
+        step_size = step_size)
+      
+      estimated_phase <- atan2(Im(temp_stft), Re(temp_stft))
+    }
+    
+    message(paste('Committing frame', i))
+    
+    committed_signal[(i-1)*step_size + 1:window_size] <- 
+      committed_signal[(i-1)*step_size + 1:window_size] + 
+      (Re(fft(mag_stft[, i]*exp((0+1i)*estimated_phase), inverse = T)) / 
+          fft_normaliser)*
+      window_function
+    
+    committed_weight[(i-1)*step_size + 1:window_size] <- 
+      committed_weight[(i-1)*step_size + 1:window_size] +
+      window_function
+  }
+  
+  reconstructed_signal <- committed_signal / committed_weight
+  return(reconstructed_signal)
+}
+```
+
+```{r smoothed surfaces to magnitude spectra}
+surface_to_mag_stft <- function(surface, surface_freq, pos_mag_freq){
+  mag_surface <- sqrt(10^(surface / 10))
+  
+  mag_stft <- matrix(nrow = length(pos_mag_freq), ncol = ncol(surface))
+  mag_stft[
+    pos_mag_freq < (min(surface_freq) - 0.1) | 
+      pos_mag_freq > (max(surface_freq) + 0.1)
+    ] <- 0
+  for(i in seq.int(ncol(surface))){
+    
+    mag_stft[is.na(mag_stft[,i]),i] <-
+      sqrt(10^((
+        spline(surface_freq, surface[,i], xout = pos_mag_freq[is.na(mag_stft[,i])])$y
+        )/10))
+    
+  }
+  
+  mag_stft <- rbind(mag_stft, mag_stft[(length(pos_mag_freq) - 1):2,])
+  
+  return(mag_stft)
+}
+```
+
+```{r phylogenetic tree}
+super_tips <- 
+"(
+  (
+    ((Arja, (Stli, Stlu)), (Dero, Maca), Leye),
+    (Mome, (Ptpa, (Ptda, Ptpe)))
+  ), 
+  (
+    ((Anpa, Pihe), Epfu, Idph, ((Laci, Labl, Laxa), (Myvo, Myyu))), 
+    (Tabr, Nyfe)
+  ), Bapl);"
+
+super_tree <- read.tree(text = super_tips)
+
+EL <- rep(NA, nrow(super_tree$edge))
+
+# Emb
+EL[37] <- 52.5 # Bapl
+
+# Phy
+EL[4] <- 13 # Arja
+EL[c(6,7)] <- 2.5 # Stli Stlu
+EL[c(9, 10)] <- 14 # Dero Maca
+EL[11] <- 26 # Leye
+
+EL[5] <- EL[4] - EL[6] # Arja Stli Stlu
+EL[8] <- EL[11] - EL[9] # Leye Maca Dero
+EL[3] <- EL[11] - EL[4] # Leye Maca Dero Arja Stli Stlu
+
+# Mor
+EL[c(17, 18)] <- 13 # Ptpe Ptda
+EL[15] <- 15 # Ptpa
+EL[13] <- 26.5 # Mome
+
+EL[16] <- EL[15] - EL[17] # Ptpe Ptda Ptpa
+EL[14] <- EL[13] - EL[15] # Ptpe Ptda Ptpa Mome
+
+# Ves
+EL[c(22, 23)] <- 20 # Anpa Pihe
+EL[c(24, 25)] <- 39 # Epfu Idph
+EL[c(28, 29, 30)] <- 8 # Laxa Labl Laci
+EL[c(32,33)] <- 15 # Myyu Myvo
+
+EL[27] <- 29 - EL[28] # Myyu Myvo Laxa Labl Laci
+EL[31] <- 29 - EL[32] # Laxa Labl Laci Myyu Myvo
+EL[21] <- EL[24] - EL[22] # Anpa Pihe Epfu Idph
+EL[26] <- EL[24] - (EL[27] + EL[28]) # Anpa Pihe Epfu Idph # Myyu Myvo Laxa Labl Laci
+
+# Mol
+EL[c(35, 36)] <- 36 # Nyfe Tabr
+
+# Chiroptera
+EL[2] <- 28.5 - EL[11] # Phy Mor
+EL[12] <- 28.5 - EL[13] # Mor Phy
+EL[20] <- 49.5 - EL[24] # Ves Mol
+EL[34] <- 49.5 - EL[35] # Mol Ves
+EL[19] <- EL[37] - (EL[20] + EL[21] + EL[22]) # Emp Ves Mol
+EL[1] <- EL[37] - (EL[2] + EL[11]) # Emp Ves Mol Phy Mor
+
+super_tree$edge.length <- EL
+
+rescaleTree <- function(tree,scale){
+  tree$edge.length <- tree$edge.length/max(phytools::nodeHeights(tree)[,2])*scale
+  return(tree)
+}
+
+super_tree <- rescaleTree(super_tree, 1)
+
+remove(EL, super_tips)
+```
+
+```{r data}
+sp <- super_tree$tip.label
+
+df <- readRDS('preprocessed_calls.RDS') %>% 
+  select(bat, species, family, calls, full) %>% 
+  mutate(species = factor(species, levels = sp))
+
+t <- seq(from = 0, to = 1, length.out = 100) %>% 
+  extract(c(F, T))
+
+temp_f <- seq(from = 0, to = 250, length.out = 257)
+f <- temp_f %>% 
+  extract(temp_f > 9 & temp_f < 212) %>% 
+  extract(c(F, T))
+
+remove(sp, temp_f)
+```
+
+```{r bootstrapped sample}
+temp <- df %>% 
+  select(-calls) %>% 
+  group_by(bat) %>% 
+  sample_n(1) %>% 
+  ungroup %>% 
+  group_by(species) %>% 
+  sample_n(4) %>% 
+  ungroup
+
+boot_mean <- df %>% 
+  select(-calls) %>% 
+  group_by(species) %>% 
+  summarise(family = unique(family)) %>% 
+  ungroup %>% 
+  cbind(
+    check <- temp %>%
+      use_series(full) %>% 
+      unlist %>% 
+      array(dim = c(104*50, temp %>% nrow)) %>% 
+      apply(1, function(x) tapply(x, temp %>% use_series(species), mean))
+  ) %>% 
+  group_by(species, family) %>% 
+  nest %>%
+  mutate(full = map(data, function(x) x %>% unlist %>% array(dim = c(104,50)))) %>% 
+  select(-data) %>% 
+  ungroup
+
+for(i in 1:24){
+  temp <- df %>% 
+    select(-calls) %>% 
+    group_by(bat) %>% 
+    sample_n(1) %>% 
+    ungroup %>% 
+    group_by(species) %>% 
+    sample_n(4) %>% 
+    ungroup
+  
+  temp_mean <- df %>% 
+  group_by(species) %>% 
+  summarise(family = unique(family)) %>% 
+  ungroup %>% 
+  cbind(
+    check <- temp %>%
+      use_series(full) %>% 
+      unlist %>% 
+      array(dim = c(104*50, temp %>% nrow)) %>% 
+      apply(1, function(x) tapply(x, temp %>% use_series(species), mean))
+  ) %>% 
+  group_by(species, family) %>% 
+  nest %>%
+  mutate(full = map(data, function(x) x %>% unlist %>% array(dim = c(104,50)))) %>% 
+  select(-data) %>% 
+  ungroup
+  
+  boot_mean <- rbind(boot_mean, temp_mean)
+  remove(temp, temp_mean)
+}
+
+boot_mean <- boot_mean %>% 
+  arrange(species)
+```
+
+```{r bootstrapped sample tree}
+n_samples <- 25
+boot_tree <- super_tree
+
+for(i in super_tree %>% use_series(tip.label)){
+  individuals <- stree(n_samples)
+  individuals$edge.length <- rep(0, n_samples)
+  individuals$tip.label <- rep(i, n_samples)
+  
+  boot_tree <- bind.tree(boot_tree, individuals, which(boot_tree$tip.label == i))
+}
+
+rm(individuals, n_samples)
+```
+
+```{r pca}
+pca <- boot_mean %>% 
+  use_series(full) %>%
+  unlist %>% 
+  array(dim = c(50*104, df %>% nrow)) %>% 
+  extract(, sample.int(df %>% nrow)) %>% 
+  t %>% 
+  prcomp
+```
+
+```{r centre spectrograms}
+boot_mean <- boot_mean %>% 
+  mutate(centred = map(full, function(x) x %>% subtract(pca %>% use_series(center))))
+```
+
+```{r pc scores}
+n <- 15
+
+pc_scores <- boot_mean %>% 
+  select(species, family) %>% 
+  cbind(pca %>% 
+    use_series(rotation) %>% 
+    extract(, 1:n) %>% 
+    t %>% 
+    multiply_by_matrix( boot_mean %>%
+        select(centred) %>%
+        unlist %>% 
+        array(dim = c(104*50, boot_mean %>% nrow))
+    ) %>% 
+    apply(2, divide_by, pca %>% use_series(sdev) %>% extract(1:n)) %>% 
+    t %>% 
+    as_tibble
+  )
+```
+
+```{r pc hyperparameters}
+pc_mle <- pc_scores %>% 
+  select(starts_with('PC')) %>%
+  apply(2, sdsBAT:::pou_type2mle, boot_tree, logl_function = pou_logl_fast,
+  optim_function = "optim", optim_method = "Nelder-Mead",
+  lower_initialisation = c(0, 0, 0), upper_initialisation = c(1, 100, 1),
+  n_restarts = 5)
+
+rownames(pc_mle) <- c('s_p', 'l', 's_n', 'logl')
+```
+
+```{r ancestral reconstruction}
+ou_K <- function(distance_matrix, ln_hyperparameters){
+  sp <- exp(2*ln_hyperparameters[1])
+  l <- exp(ln_hyperparameters[2])
+  sn <- exp(2*ln_hyperparameters[3])
+  
+  K <- distance_matrix %>% 
+    abs %>%
+    multiply_by(-1) %>% 
+    divide_by(l) %>% 
+    exp %>%
+    multiply_by(sp) %>% 
+    add(distance_matrix %>% nrow %>% diag %>% multiply_by(sn))
+  
+  return(K)
+}
+
+pc <- colnames(pc_mle)
+D <- dist.nodes(boot_tree)
+
+anc <- colnames(D) %>% extract(-550:-1)
+
+ancestral_map <- matrix(nrow = anc %>% length, ncol = pc %>% length) %>% 
+  set_rownames(anc) %>% 
+  set_colnames(pc)
+
+ancestral_post_var <- matrix(nrow = anc %>% length, ncol = pc %>% length) %>% 
+  set_rownames(anc) %>% 
+  set_colnames(pc)
+
+for(i in anc){
+  for(j in pc){
+    K <- ou_K(D, pc_mle %>% extract(1:3, j) %>%  log)
+    inv_K_obs <- K[!(rownames(K) %in% anc), !(colnames(K) %in% anc)] %>% solve
+    
+    ancestral_map[i, j] <- K[i %>% as.character, !(colnames(K) %in% anc)] %>% 
+      multiply_by_matrix(inv_K_obs) %>% 
+      multiply_by_matrix(pc_scores %>% extract2(j))
+    
+    ancestral_post_var[i, j] <- K[i %>% as.character, i %>% as.character] %>%
+      subtract(
+        K[i %>% as.character, !(colnames(K) %in% anc)] %>% 
+          multiply_by_matrix(inv_K_obs) %>%
+          multiply_by_matrix(K[!(colnames(K) %in% anc), i %>% as.character])
+        )
+  }
+}
+
+ancestor <-  c('23', '24', '25', '26', 'Arja', '27', 'Stli', 'Stlu', '28', 'Dero', 'Maca', 'Leye', '29', 'Mome', '30', 'Ptpa', '31', 'Ptda', 'Ptpe', '32', '33', '34', 'Anpa', 'Pihe', 'Epfu', 'Idph', '35', '36', 'Laci', 'Labl', 'Laxa', '37', 'Myvo', 'Myyu', '38', 'Tabr', 'Nyfe', 'Bapl' ) %>% factor
+
+ancestral_recon <- ancestral_map %>% 
+  multiply_by_matrix(
+    pca %>% 
+      use_series(rotation) %>% 
+      extract(,1:15) %>% 
+      apply(1, multiply_by, pca %>% use_series(sdev) %>% extract(1:15))
+  ) %>% 
+  as_tibble() %>% 
+  cbind(ancestor, .) %>% 
+  group_by(ancestor) %>% 
+  nest %>%
+  mutate(centred = map(data, function(x) x %>% unlist %>% array(dim = c(104,50)))) %>% 
+  select(-data) %>% 
+  ungroup %>% 
+  mutate(full = map(centred, function(x) x %>% add(pca %>% use_series(center))))
+```
+
+# Introduction
+
+We are given a dataset of $N$ bat echolocation call recordings denoted $\{y_n\}_{n = 1}^N$. This recording is then processed to produce a set of smooth surfaces over a regular grid denoted $\{\tilde{S}_n\}_{n=1}^{N}$. This surface is produced by smoothing the call spectrogram and mapping it to a regular grid over relevant frequencies and an absolute time scale @pigoli2015analysis.
+
+```{r recording figure, fig.cap = "A randomly selected bat call from the species Arja alongside it's corresponding smoothed surface representation. The smooth surface is obtained by taking the call spectrogram and treating it as a functional data object. The spectrogram is first smoothed by a robust 2-D spline smoother, then mapped to an absolute time scale and registered in time by a pairwise surface synchronisation, and finally restricted to the 9 - 212 kHz frequency spectrum. "}
+test_call <- df %>% 
+  filter(species == 'Arja') %>% 
+  sample_n(1)
+
+#play(test_call %>% select(calls) %>% unlist %>%  as.vector, rate = 50000)
+
+plot_a <- test_call %>% select(calls) %>% unnest %>% 
+  transmute(
+    time = seq(from = 0, by = 1/500, length.out = calls %>% length), 
+    call = calls
+    ) %>% 
+  ggplot() +
+  geom_line(aes(x = time, y = call)) +
+  theme_classic() +
+  labs(
+    title = 'Call\nTest Recording' %>% paste(test_call$species, test_call$bat, .),
+    x = 'Time (ms)',
+    y = 'Amplitude'
+  )
+
+plot_b <- expand.grid(freq = f, time = t) %>% 
+  mutate(spec = test_call %>% use_series(full) %>% unlist) %>% 
+  ggplot() +
+  geom_raster(aes(x = time, y = freq, fill = spec), show.legend = F) +
+  viridis::scale_fill_viridis(option = 'D') +
+  theme_classic() +
+  scale_x_continuous(breaks = c(0, 0.5, 1)) +
+  labs(
+    title = 'Call\nPreprocessed Spectrogram' %>% paste(test_call$species, test_call$bat, .),
+    x = 'Time (Absolute)',
+    y = 'Frequency (kHz)'
+  )
+
+gridExtra::grid.arrange(plot_a, plot_b, ncol=2)
+#cowplot::plot_grid(plot_a, plot_b, labels=c('A', 'B'))
+remove(plot_a, plot_b)
+```
+
+Along with this dataset we are given a phylogeny defining the evolutionary relationships between the species of bat.
+
+```{r phylogeny figure, fig.cap = "Tree of assumed evolutionary relationships between Bat Species. This phylogeny was transcribed from a recent bat super tree and shoud represent a 'best guess' for the evolutionary relationships between bat species based on the fossil record alongside morphological and molecular studies of evolutionary relationships."}
+node_lab <-  c(super_tree$tip.label, 23:38)
+ggtree(super_tree) +
+  geom_tiplab(hjust = 0.5, offset = 0.05) +
+  geom_label2(aes(subset =! isTip, label = node_lab)) +
+  labs(
+    title = 'Bat Phylogenetic Tree'
+  )
+```
+
+A model has been developed to produce ancestral reconstructions for the smoothed spectrogram surfaces representing the echolocation calls of extinct bats and an audio file approximating the call that would correspond to such a spectrogram surface can also be produced.
+
+```{r ancestral surface}
+check = '26'
+plot_a <- expand.grid(freq = f, time = t) %>% 
+  mutate(spec = ancestral_recon %>% filter(ancestor == check) %>% use_series(full) %>% unlist) %>% 
+  ggplot() +
+  geom_raster(aes(x = time, y = freq, fill = spec), show.legend = F) +
+  viridis::scale_fill_viridis(option = 'D') +
+  theme_classic() +
+  scale_x_continuous(breaks = c(0, 0.5, 1)) +
+  labs(
+    title = 'Ancestral Surface' %>% paste(check, .),
+    x = 'Time (Absolute)',
+    y = 'Frequency (kHz)'
+  )
+```
+
+```{r ancestral audio, fig.cap = "Ancestral spectrogram and acoustic approximation for the common ancestor of Arja, Stli, Stlu. The reconstruction is given by the MAP estimates for the weight of each evolutionary feature at the node. In this case, evolutionary features were identified by a PCA of the smoothed spectrogram surfaces. The acoustic reconstruction was performed assuming a call duration of approximately 4 ms"}
+mag_stft <- surface_to_mag_stft(ancestral_recon %>% filter(ancestor == check) %>% use_series(full) %>% extract2(1), f, seq(0, 250, length.out = 257))
+
+signal <- rtisi_la(mag_stft, step_size = 2^5, window_function = hamming(nrow(mag_stft)), 
+  iterations = 10, fft_normaliser = nrow(mag_stft))
+
+plot_b <- signal %>% divide_by(signal %>% abs %>% max) %>%
+  as_tibble %>% 
+  transmute(
+    time = seq(from = 0, by = 1/500, length.out = value %>% length), 
+    call = value
+    ) %>% 
+  ggplot() +
+  geom_line(aes(x = time, y = call)) +
+  theme_classic() +
+  labs(
+    title = 'Ancestral Call\nAcoustic Approximation' %>% paste(check, .),
+    x = 'Time (ms)',
+    y = 'Amplitude'
+  )
+
+gridExtra::grid.arrange(plot_a, plot_b, ncol=2)
+#cowplot::plot_grid(plot_a, plot_b, labels=c('A', 'B'))
+remove(plot_a, plot_b)
+
+#play(signal %>% divide_by(signal %>% abs %>% max) %>% c, rate = 20000)
+```
+
+Thus, for the dataset of Mexican Bat echolocation calls and the given Phylogeny, Ancestral Reconstruction has been performed.
+
+# The Current Model
+
+An illustration of the current iteration of a model for the evolution of bat echolocation calls is presented in Figure 4.
+
+\tikzstyle{rv} = [circle, draw]
+\tikzstyle{plate} = [node distance = 1.25cm]
+
+\begin{figure}
+\centering
+\begin{tikzpicture}[node distance = 2cm]
+\node[rv, fill = gray!50, label = above left:$y_n$] (y) {};
+\node[rv, fill = gray!50, label = above left:$S_n$, right of = y] (S) {}
+edge[<-]  (y);
+
+\node[rv, fill = gray!50, right of=S, label = above left:$w_{nq}$] (w) {}
+edge[<-] (S);
+
+\node[plate, above right of = w] (ntop) {};
+\node[plate, below left of = y, label = 5:$N$] (nbot) {};
+\draw[rounded corners] (ntop) rectangle (nbot) ;
+
+
+\node[right of = w, label = above left:$\hat{w}_q$, rv] (hatw) {};
+\node[above of = hatw, label = above left:$\theta_q$] (theta) {\textbullet}
+edge [->] (hatw)
+edge [<-] (w);
+\node[right of = hatw, label = above right:$\mathcal{P}$] (P) {\textbullet}
+edge [->] (hatw)
+edge [->] (theta);
+\node[below of = w, label = above right:$\phi_q$] (phi) {\textbullet}
+edge [<-] (S)
+edge [->] (w);
+
+\node[plate, above right of = theta] (qtop) {};
+\node[plate, below left of = phi, label = 5:$Q$, ] (qbot) {};
+\draw[rounded corners] (qtop) rectangle (qbot);
+
+\node[rv, below of=P, label = below left:$\hat{S}$] (hatS) {}
+edge[<-] (hatw)
+edge[<-] (phi);
+\node[right of=hatS, label = below left:$\hat{y}$] (haty) {\textbullet}
+edge[<-] (hatS);
+\end{tikzpicture}
+\caption{A Graphical model detailing the structure of the model for evolution used to produce reconstructions of ancestral bat echolocation calls. Let \(y_n\) be a random variable representing an echolocation call recording. \(S_n\) is the random variable representing the smoothed spectrogram surface given by \(y_n\). The Mexican bat call dataset provides \(N = 1816\) observations of these random variables. The process of transforming a call recording into a spectrogram surface was covered in my 9 month report. The model assumes that each \(S_n\) can be modelled by \(Q\) independent deterministic 'evolutionary features' denoted \(\phi_q\). In this case \(\phi_q\) is inferred by a Principal Components Analysis of \(\{S_n\}_{n = 1}^N\). The weight of each evolutionary feature in \(S_n\) is itself a random variable, where \(w_{nq}\) denotes the weight of \(\phi_q\) in \(S_n\). \(w_{nq}\) is assumed to behave as an Ornstein-Uhlenbeck Gaussian process for which the input space is the phylogeny \(\mathcal{P}\). Each Gaussian process is defined by the deterministic hyperparameters \(\theta_q = [\gamma_q, \ell_q, \sigma_q]^\mathsf{T}\) which are inferred from the data by Type II maximum likelihood estimation over the observed weights. The phylogeny \(\mathcal{P}\) is also assumed to be deterministic in this model and is shown in Figure 2. Ancestral reconstruction is performed by making a prediction for the feature weights, denoted \(\hat{w}\), at some point on \(\mathcal{P}\). Applying these weights to the evolutionary features produces the ancestral call surface which in turn provides an estimate for the ancestral call.}
+\end{figure}
+
+
+# A Joint model for spectrogram surfaces
+
+
+\begin{figure}
+\centering
+\begin{tikzpicture}[node distance = 2cm]
+\node[rv, fill = gray!50, label = above left:$y_n$] (y) {};
+\node[rv, fill = gray!50, label = above left:$S_n$, right of = y] (S) {}
+edge[->]  (y);
+
+\node[rv, right of=S, label = above right:$w_{q}$] (w) {}
+edge[->] (S);
+
+\node[plate, above right of = S] (ntop) {};
+\node[plate, below left of = y, label = 5:$N$] (nbot) {};
+\draw[rounded corners] (ntop) rectangle (nbot) ;
+
+\node[above of = w, label = above right:$\theta_q$] (theta) {\textbullet}
+edge [->] (w);
+\node[right of = w, label = above right:$\mathcal{P}$] (P) {\textbullet}
+edge [->] (w);
+\node[below of = w, label = above right:$\phi_q$] (phi) {\textbullet}
+edge [->] (S);
+
+\node[plate, above right of = theta] (qtop) {};
+\node[plate, below left of = phi, label = 5:$Q$, ] (qbot) {};
+\draw[rounded corners] (qtop) rectangle (qbot);
+
+\node[rv, below of=S, label = below left:$\hat{S}$] (hatS) {}
+edge[<-] (w)
+edge[<-] (phi);
+\node[below of=y, label = below left:$\hat{y}$] (haty) {\textbullet}
+edge[<-] (hatS);
+
+\node[above of = S, label = above left:$\Sigma$] (phi) {\textbullet}
+edge [->] (S);
+\end{tikzpicture}
+\caption{A proposed extension to the model for the evolution a bat echolocation calls presented in Figure 4. This model includes a noise process over the call surface, which would allow the calculation of the model evidence. This in turn would facilitate model selection for various sets of evolutionary features, phylogenies, and Ornstein-Uhlenbeck process hyperparameters.}
+\end{figure}
